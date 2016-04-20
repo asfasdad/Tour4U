@@ -90,25 +90,28 @@ body {
 	opacity: 0;
 }
 .first {
-	top: 13.04%;
+	top: 12.04%;
 	left: 9.6%;
 	width: 41%;
-
+	max-width: 160px;
 }
 .second {
 	top: 25.39%;
 	right: 4.93%;
 	width: 53%;
+	max-width: 200px;
 }
 .third {
 	top: 46.74%;
 	left: 4.93%;
 	width: 50.4%;
+	max-width: 200px;
 }
 .fourth {
-	top: 65.11%;
+	top: 67.11%;
 	right: 11.6%;
 	width: 41%;
+	max-width: 160px;
 }
 
 .first-tap, .second-tap, .third-tap, .fourth-tap {
