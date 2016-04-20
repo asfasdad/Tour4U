@@ -14,13 +14,18 @@ $(document).ready(function() {
 	$(".fp-slidesNav").css("margin-left", "-100px");
             var changeWidth = function() {
                          var windowHeight = $(window).height(),
-                               slideWidth = windowHeight*(750/1181);
-                         $('.fb-tap').css('width',slideWidth*0.5);
-                         $('#fb-content').css('width',slideWidth);
-                         $('#food-content').css('width',slideWidth);
-                         $('#car-content').css('width',slideWidth);
-                         $('#play-content').css('width',slideWidth);
-                         $('#horse-content').css('width',slideWidth);
+                               slideWidth = windowHeight*(750/1181),
+                               windowWidth = $(window).width();
+                              if(slideWidth < windowWidth) {
+                                     $('.fb-tap').css('width',slideWidth*0.5);
+                                     $('#football-tap').css('width',slideWidth*0.54);
+                                     $('#fb-content').css('width',slideWidth);
+                                     $('#food-content').css('width',slideWidth);
+                                     $('#car-content').css('width',slideWidth);
+                                     $('#play-content').css('width',slideWidth);
+                                     $('#horse-content').css('width',slideWidth);                              
+                          }     
+
             }
 	$(function(){
    		 $('body').fullpage({
