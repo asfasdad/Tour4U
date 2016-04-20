@@ -12,7 +12,16 @@ $(document).ready(function() {
 	//进度条加载完即消失
 	$(".loading").fadeOut();
 	$(".fp-slidesNav").css("margin-left", "-100px");
-    
+            var changeWidth = function() {
+                         var windowHeight = $(window).height(),
+                               slideWidth = windowHeight*(750/1181);
+                         $('.fb-tap').css('width',slideWidth*0.5);
+                         $('#fb-content').css('width',slideWidth);
+                         $('#food-content').css('width',slideWidth);
+                         $('#car-content').css('width',slideWidth);
+                         $('#play-content').css('width',slideWidth);
+                         $('#horse-content').css('width',slideWidth);
+            }
 	$(function(){
    		 $('body').fullpage({
    		 	slidesNavigation: true,
@@ -70,22 +79,8 @@ $(document).ready(function() {
 
            		 });
               });
-
-
-                // $('body').fullpage({
-                //     anchors: ['firstPage', 'secondPage', 'thirdPage', 'fourthPage', 'fifthPage','sixthPage','lastPage'],
-                //     afterLoad: function(anchorLink, index){
-                //         var loadedSection = $(this);
-                //         //using index
-                //         if(index == 0){
-                //             alert("Section 3 ended loading");
-                //         }
-                //         //using anchorLink
-                //         if(anchorLink == 'secondSlide'){
-                //             alert("Section 2 ended loading");
-                //         }
-                //     }
-                // });
+            changeWidth();             
+             $(window).on('resize',changeWidth); 
 }); 
 
 // 当前屏幕的动画
