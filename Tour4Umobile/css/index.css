@@ -1,7 +1,7 @@
 html {
 	/*将页面分为 100 份，1份 为 px，1rem 为 10份即 px */
 	/* font-size 为 75 px, 即 1rem 为 75 px */
-	font-size: 75px !important;
+	/*font-size: 75px !important;*/
 	height: 100%;
 }
 body {
@@ -13,7 +13,7 @@ body {
 	background-size: cover;
 }
 .fp-slidesNav {
-	margin-left: -110px !important;
+	/*margin-left: -110px !important;*/
 }
 .fp-slidesNav ul li a span {
 	border: none;
@@ -223,6 +223,41 @@ body {
 	height: 100%;
 	background: url(../img/0.shouye/04.png) no-repeat;
 	background-size: cover;
+}
+.tel {
+	margin: 0 auto;
+	padding: 15px;
+	width: 80%;
+	height: 70%;
+	background: url(../img/0.shouye/tel-text.png) no-repeat;
+	background-size: 100% 100%;
+	color: #fff;
+	font-size: 20px;
+	font-family: "Microsoft YaHei";
+}
+@media screen and (max-height: 670px) {
+	.tel {
+		height: 80%;
+	}
+}
+@media screen and (max-height: 640px) {
+	.tel {
+		height: 80%;
+	}
+}
+@media screen and (max-height: 568px) {
+	.tel {
+		font-size: 16px;
+	}
+}
+.tel p:nth-child(even) {
+	text-indent: 0.666667rem;
+}
+.tel p:nth-child(7) ~ p {
+	text-indent: 0.666667rem;
+}
+.tel p:nth-child(11) {
+	margin-top: 20px;
 }
 /*fadeInLeft 动画*/
 @-webkit-keyframes fadeInLeft {
