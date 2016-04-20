@@ -11,7 +11,8 @@ $("script").ready(function() {
 $(document).ready(function() {
 	//进度条加载完即消失
 	$(".loading").fadeOut();
-	
+	$(".fp-slidesNav").css("margin-left", "-100px");
+    
 	$(function(){
    		 $('body').fullpage({
    		 	slidesNavigation: true,

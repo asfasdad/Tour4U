@@ -12,6 +12,9 @@ body {
 	height: 100%;
 	background-size: cover;
 }
+.fp-slidesNav {
+	margin-left: -110px !important;
+}
 .fp-slidesNav ul li a span {
 	border: none;
 }
