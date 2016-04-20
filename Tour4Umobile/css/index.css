@@ -28,7 +28,7 @@ body {
 .loading {
 	position: absolute;
 	z-index: 9999;
-	background: url(../img/0.shouye/loadbg.jpg) no-repeat;
+	background: url(../img/0.shouye/logobg.jpg) no-repeat;
 	background-size: 100% 100%;
 }
 .progress {
@@ -65,7 +65,7 @@ body {
 /*首页 index*/
 .index {
 	position: relative;
-	background: url(../img/0.shouye/01.png) no-repeat;
+	background: url(../img/0.shouye/01.jpg) no-repeat;
 	background-size: 100% 100%; 
 }
 .index img {
@@ -151,9 +151,23 @@ body {
             left: 0%;
             top: 3.44%;
 }
-@media screen and (max-height: 490px) {
-        
+@media screen and (min-width: 768px) {
+        .index img {
+            width: 50%;
+        }
+        .introduce img {
+            width: 70%;
+        }
 }
+@media screen and (min-width: 1024px) {
+        .index img {
+            width: 30%;
+        }
+        .introduce img , .inf .tel{
+            width: 50%;
+        }
+}
+
 /*动画*/
 /*.animation .first ,.animation .second,.animation .third,.animation .fourth,.animation .first-tap ,.animation .second-tap,.animation .third-tap ,.animation .fourth-tap ,.animation .fb-tap {
 	opacity: 1;
@@ -241,13 +255,13 @@ body {
 }
 .tel {
 	margin: 0 auto;
-	padding: 15px;
+	padding: 40px 15px 15px 15px;
 	width: 80%;
 	height: 70%;
 	background: url(../img/0.shouye/tel-text.png) no-repeat;
 	background-size: 100% 100%;
 	color: #fff;
-	font-size: 20px;
+	font-size: 18px;
 	font-family: "Microsoft YaHei";
 }
 @media screen and (max-height: 670px) {
@@ -264,6 +278,28 @@ body {
 	.tel {
 		font-size: 16px;
 	}
+}
+@media screen and (max-width: 760px ){
+            .tel {
+                padding: 40px 15px 15px 63px;
+                width: 63%;
+                font-size: 28px;
+            }
+}
+@media screen and (min-width: 760px ){
+            .tel {
+                padding: 40px 15px 15px 63px;
+                width: 63%;
+                font-size: 28px;
+            }
+}
+ 
+@media screen and (min-width: 760px ){
+            .tel {
+                padding: 40px 0px 15px 76px;
+                width: 63%;
+                font-size: 22px;
+            }
 }
 .tel p:nth-child(even) {
 	text-indent: 0.666667rem;
