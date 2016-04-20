@@ -66,7 +66,7 @@ body {
 .index {
 	position: relative;
 	background: url(../img/0.shouye/01.png) no-repeat;
-	background-size: cover; 
+	background-size: 100% 100%; 
 }
 .index img {
 	position: absolute;
@@ -77,8 +77,8 @@ body {
 
 /*介绍页面 introduce*/
 .introduce {
-	background: url(../img/0.shouye/03.png) no-repeat;
-	background-size: cover;
+	background: url(../img/0.shouye/index-text.jpg) no-repeat;
+	background-size: 100% 100%;
 }
 .introduce img, .inf img {
 	display: block;
