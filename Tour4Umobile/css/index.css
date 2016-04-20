@@ -279,26 +279,11 @@ body {
 		font-size: 16px;
 	}
 }
-@media screen and (max-width: 760px ){
-            .tel {
-                padding: 40px 15px 15px 63px;
-                width: 63%;
-                font-size: 28px;
-            }
-}
 @media screen and (min-width: 760px ){
             .tel {
                 padding: 40px 15px 15px 63px;
                 width: 63%;
                 font-size: 28px;
-            }
-}
- 
-@media screen and (min-width: 760px ){
-            .tel {
-                padding: 40px 0px 15px 76px;
-                width: 63%;
-                font-size: 22px;
             }
 }
 .tel p:nth-child(even) {
