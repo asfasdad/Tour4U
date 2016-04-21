@@ -13,13 +13,13 @@ body {
 	background-size: cover;
 }
 .fp-slidesNav {
-	/*margin-left: -110px !important;*/
+	margin-left: -112px !important;
 }
 .fp-slidesNav ul li a span {
 	border: none;
 }
 .fp-slidesNav ul li a span {
-	background: #64696D;
+	background: #ccc;
 }
 .fp-slidesNav ul li a.active span {
 	background: #fff;
@@ -324,6 +324,13 @@ body {
                 padding: 40px 15px 15px 63px;
                 width: 63%;
                 font-size: 28px;
+            }
+}
+@media screen and (min-width: 1024px ){
+            .tel {
+                /*padding: 40px 15px 15px 63px;
+                width: 63%;*/
+                font-size: 18px;
             }
 }
 .tel p:nth-child(even) {

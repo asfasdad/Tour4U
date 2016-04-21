@@ -2,16 +2,18 @@
 $("head").ready(function() {
 	$(".progress-bar").animate({'width': '30%'},50);
 });
-$("body").ready(function() {
-	$(".progress-bar").animate({'width': '80%'},50);
-});
+// $("body").ready(function() {
+// 	$(".progress-bar").animate({'width': '80%'},50);
+// });
+$("img").ready(function() {
+            $(".progress-bar").animate({'width': '80%'},50);
+})
 $("script").ready(function() {
 	$(".progress-bar").animate({'width': '90%'},50);
 });
 $(document).ready(function() {
 	//进度条加载完即消失
 	$(".loading").fadeOut();
-	$(".fp-slidesNav").css("margin-left", "-100px");
             var changeWidth = function() {
                          var windowHeight = $(window).height(),
                                slideWidth = windowHeight*(750/1181),
