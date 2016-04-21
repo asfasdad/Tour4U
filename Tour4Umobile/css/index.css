@@ -1,7 +1,7 @@
 html {
 	/*将页面分为 100 份，1份 为 px，1rem 为 10份即 px */
 	/* font-size 为 75 px, 即 1rem 为 75 px */
-	/*font-size: 75px !important;*/
+	font-size: 75px !important;
 	height: 100%;
 }
 body {
@@ -355,9 +355,11 @@ body {
 @keyframes show {
   from {
     opacity: 0;
+    filter: alpha(opacity=0);
   }
   to {
     opacity: 1;
+    filter: alpha(opacity=100);
   }
 }
 @-webkit-keyframes show {
