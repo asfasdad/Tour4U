@@ -20,6 +20,7 @@ $(document).ready(function() {
                                windowWidth = $(window).width();
                               if(slideWidth < windowWidth) {
                                      $('.fb-tap').css('width',slideWidth*0.5);
+                                     $('#introduce-slide').css('width',slideWidth*0.8)
                                      $('#football-tap').css('width',slideWidth*0.54);
                                      $('#fb-content').css('width',slideWidth);
                                      $('#food-content').css('width',slideWidth);
