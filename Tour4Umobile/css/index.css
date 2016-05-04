@@ -348,7 +348,7 @@ body {
                 font-size: 18px;
             }
 }
-.tel p:nth-child(even) {
+/*.tel p:nth-child(even) {
 	text-indent: 0.666667rem;
 }
 .tel p:nth-child(7) ~ p {
@@ -356,6 +356,19 @@ body {
 }
 .tel p:nth-child(11) {
 	margin-top: 20px;
+}*/
+.tel p {
+  margin: 5px 0;
+}
+.tel p span {
+  display: inline-block;
+  text-indent: 0.3rem;
+}
+.tel p:nth-child(8) {
+  margin-top: 20px;
+}
+.tel p:nth-child(5), .tel p:nth-child(6), .tel p:nth-child(7), .tel p:nth-child(9), .tel p:nth-child(10), .tel p:nth-child(11), .tel p:nth-child(12) {
+      text-indent: 0.6666667rem;
 }
 /*fadeInLeft 动画*/
 @-webkit-keyframes fadeInLeft {
