@@ -80,20 +80,14 @@ body {
 
 /*介绍页面 introduce*/
 .introduce {
-	background: url(http://7xkopm.com1.z0.glb.clouddn.com/0.shouye/index-text.jpg) no-repeat;
-	background-size: 100% 100%;
-}
-#introduce-slide {
-            position: absolute;
-            top: 0%;
-            width: 10%;
+  background: url(http://7xkopm.com1.z0.glb.clouddn.com/0.shouye/index-text.jpg) no-repeat;
+  background-size: 100% 100%;
 }
 .introduce img, .inf img {
-	display: block;
-	margin: 0 auto;
-	width: 80%;
+  display: block;
+  margin: 0 auto;
+  width: 80%;
 }
-
 
 /*详细页面 公共样式*/
 #fb-slide , #food-slide , #play-slide , #horse-slide , #car-slide ,#fb-content ,#food-content ,#play-content ,#car-content,#horse-content {
@@ -179,12 +173,15 @@ body {
             width: 50%;
         }
         .introduce img  {
-            width: 70%;
+            width: 50%;
         }
 }
 @media screen and (min-width: 1240px) {
         .index img {
             width: 20%;
+        }
+        .introduce img  {
+            width: 30%;
         }
 }
 
@@ -194,7 +191,7 @@ body {
 }*/
 #int-show ,#inf-show{
 	opacity: 0;
-            filter: alpha(opacity=0);
+      filter: alpha(opacity=0);
 }
 .animation .first {
 	animation: show .8s linear .4s forwards;
@@ -306,7 +303,7 @@ body {
 	width: 100%;
 	height: 100%;
 	background: url(http://7xkopm.com1.z0.glb.clouddn.com/0.shouye/04.png) no-repeat;
-	background-size: cover;
+	background-size: 100% 100%;
 }
 .tel {
 	margin: 0 auto;
