@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Build artifacts
+build/
+dist/
+
+# IDE and local tools
+.windsurf/
+.DS_Store
+
+# Secrets and credentials
+client_secrets.json
+client_secret_*.json
+*.pem
+*.key
+*.p12
+
+# Runtime data
+history_data/
+*.log
