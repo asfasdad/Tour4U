@@ -98,6 +98,31 @@ def save_session_for_file(history_filename: str, session: Dict[str, Any]) -> Non
     _save_sessions_raw(data)
 
 
+def rename_session_file_key(old_history_filename: str, new_history_filename: str) -> bool:
+    """历史文件重命名后，同步迁移 sessions.json 的键。"""
+    if not old_history_filename or not new_history_filename:
+        return False
+
+    data = _load_sessions_raw()
+    by_file = data.get("by_file", {})
+    by_id = data.get("by_id", {})
+
+    if old_history_filename not in by_file:
+        return False
+
+    item = by_file.pop(old_history_filename)
+    by_file[new_history_filename] = item
+
+    session_id = item.get("id")
+    if session_id:
+        by_id[session_id] = new_history_filename
+
+    data["by_file"] = by_file
+    data["by_id"] = by_id
+    _save_sessions_raw(data)
+    return True
+
+
 def list_history_files_with_sessions() -> List[str]:
     """返回所有 CSV 历史文件列表（与 sessions 可能部分对应）"""
     _ensure_dir()

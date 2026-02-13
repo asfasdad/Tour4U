@@ -33,6 +33,7 @@ from session_store import (
     get_session_for_file,
     save_session_for_file,
     list_history_files_with_sessions,
+    rename_session_file_key,
 )
 from data_diff import compute_diff, make_snapshot, get_diff_summary_for_ui, sku_fingerprint, infer_price_from_text
 
@@ -696,8 +697,33 @@ def db_insert_ad_impression(
 def load_history_file(filename: str) -> pd.DataFrame | None:
     path = os.path.join(HISTORY_DIR, filename)
     if os.path.exists(path):
-        return pd.read_csv(path)
+        for encoding in ("utf-8-sig", "utf-8", "gbk"):
+            try:
+                return pd.read_csv(path, encoding=encoding)
+            except pd.errors.EmptyDataError:
+                return pd.DataFrame()
+            except UnicodeDecodeError:
+                continue
+            except Exception:
+                continue
     return None
+
+
+def create_empty_history_file(new_name: str) -> str | None:
+    base_name = (new_name or "").strip()
+    if not base_name:
+        return None
+    safe_name = "".join([c for c in base_name if c.isalnum() or c in (" ", "_", "-")]).strip()
+    if not safe_name:
+        return None
+    if not safe_name.endswith(".csv"):
+        safe_name += ".csv"
+    path = os.path.join(HISTORY_DIR, safe_name)
+    if os.path.exists(path):
+        return None
+    with open(path, "w", encoding="utf-8-sig", newline=""):
+        pass
+    return safe_name
 
 
 def save_to_history(df: pd.DataFrame, keyword_summary: str) -> str:
@@ -714,8 +740,9 @@ def rename_history_file(old_name: str, new_name: str) -> bool:
         new_name += ".csv"
     old_path = os.path.join(HISTORY_DIR, old_name)
     new_path = os.path.join(HISTORY_DIR, new_name)
-    if os.path.exists(old_path):
+    if os.path.exists(old_path) and not os.path.exists(new_path):
         os.rename(old_path, new_path)
+        rename_session_file_key(old_name, new_name)
         return True
     return False
 
@@ -846,7 +873,7 @@ def adparser_enrich_and_dedup(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
 
 
 def ensure_domain_and_product_id(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
+    if df is None:
         return df
     out = df.copy()
     if "domain" not in out.columns:
@@ -996,7 +1023,37 @@ with st.sidebar:
         if st.session_state.get("_sidebar_selected_file") and st.session_state._sidebar_selected_file in files:
             default_index = options.index(st.session_state._sidebar_selected_file)
         selected_file = st.selectbox("选择历史记录", options, index=default_index, key="sb_history_select")
-        col_h1, col_h2 = st.columns(2)
+        new_file_name = st.text_input("新建文件名", placeholder="例如: Tent_2026_02")
+        col_h1, col_h2, col_h3 = st.columns(3)
+        if col_h1.button("🆕 新建文件"):
+            created_name = create_empty_history_file(new_file_name)
+            if created_name:
+                st.session_state.current_df = pd.DataFrame()
+                st.session_state.current_history_key = created_name
+                st.session_state._sidebar_selected_file = created_name
+                st.session_state.ai_report_content = ""
+                new_session = get_session_for_file(created_name)
+                st.session_state.current_session = {
+                    "id": new_session.get("id"),
+                    "title": new_session.get("title", created_name),
+                    "messages": new_session.get("messages", []),
+                    "created_at": new_session.get("created_at"),
+                    "updated_at": new_session.get("updated_at"),
+                    "data_snapshots": [],
+                }
+                save_session_for_file(created_name, {
+                    "id": st.session_state.current_session.get("id"),
+                    "title": st.session_state.current_session.get("title"),
+                    "messages": st.session_state.current_session.get("messages", []),
+                    "created_at": st.session_state.current_session.get("created_at"),
+                    "updated_at": st.session_state.current_session.get("updated_at"),
+                    "data_snapshots_meta": [],
+                })
+                st.success(f"已新建: {created_name}")
+                st.rerun()
+            else:
+                st.warning("新建失败：文件名为空、非法或已存在")
+
         if col_h1.button("📂 加载数据"):
             if selected_file and selected_file != "-- 请选择 --":
                 loaded_df = load_history_file(selected_file)
@@ -1020,13 +1077,28 @@ with st.sidebar:
                     }
                     st.success(f"已加载: {selected_file}，可继续多轮对话")
                     st.rerun()
-        new_file_name = st.text_input("重命名为", placeholder="例如: Tent_Analysis")
+                else:
+                    st.error(f"加载失败：{selected_file} 不存在或内容不可读取")
+        rename_to = st.text_input("重命名为", placeholder="例如: Tent_Analysis")
         if col_h2.button("✏️ 重命名"):
-            if selected_file and new_file_name:
-                if rename_history_file(selected_file, new_file_name):
+            if selected_file == "-- 请选择 --":
+                st.warning("请先选择要重命名的文件")
+            elif not rename_to:
+                st.warning("请输入新文件名")
+            else:
+                if rename_history_file(selected_file, rename_to):
+                    final_name = rename_to if rename_to.endswith(".csv") else f"{rename_to}.csv"
+                    if st.session_state.get("current_history_key") == selected_file:
+                        st.session_state.current_history_key = final_name
+                    st.session_state._sidebar_selected_file = final_name
                     st.success("重命名成功！")
                     time.sleep(0.5)
                     st.rerun()
+                else:
+                    st.error("重命名失败：源文件不存在或目标文件已存在")
+
+        if col_h3.button("🧾 刷新列表"):
+            st.rerun()
 
     with st.expander("📡 新建抓取任务", expanded=True):
         target_domain = st.text_input("🎯 目标域名 (留空抓所有)", value="", placeholder="例如 naturehike.com")
@@ -1641,7 +1713,7 @@ if (not eng_running) and eng_err:
 if page == "📊 总览" and st.session_state.current_df is not None:
     df = enrich_dataframe_for_ui(st.session_state.current_df.copy(), st.session_state.current_history_key or "")
     df = ensure_domain_and_product_id(df)
-    if st.session_state.get("selected_domain"):
+    if st.session_state.get("selected_domain") and "domain" in df.columns:
         df = df[df["domain"] == st.session_state.selected_domain]
     if "广告组ID" not in df.columns and "Domain" in df.columns:
         df["广告组ID"] = df["Domain"]
@@ -1988,7 +2060,7 @@ if page == "📊 总览" and st.session_state.current_df is not None:
                 prev_df2 = ensure_domain_and_product_id(enrich_dataframe_for_ui(prev_df.copy(), ""))
                 curr_df2 = df.copy()
                 # 全局域名过滤
-                if st.session_state.get("selected_domain"):
+                if st.session_state.get("selected_domain") and "domain" in prev_df2.columns and "domain" in curr_df2.columns:
                     prev_df2 = prev_df2[prev_df2["domain"] == st.session_state.selected_domain]
                     curr_df2 = curr_df2[curr_df2["domain"] == st.session_state.selected_domain]
 
