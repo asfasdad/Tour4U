@@ -5,6 +5,8 @@ import os
 import webbrowser
 import threading
 import time
+import socket
+from urllib import request
 from streamlit.web import cli as stcli
 
 
@@ -28,19 +30,45 @@ def _ensure_history_dir() -> None:
     os.makedirs(data_dir, exist_ok=True)
 
 
-def _open_browser() -> None:
-    time.sleep(2)
-    try:
-        webbrowser.open("http://localhost:8501")
-    except Exception:
-        pass
+def _pick_server_port(default_port: int = 8501) -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", default_port))
+            return default_port
+        except OSError:
+            sock.bind(("127.0.0.1", 0))
+            return int(sock.getsockname()[1])
+
+
+def _wait_for_server(port: int, timeout_sec: int = 45) -> bool:
+    url = f"http://127.0.0.1:{port}/_stcore/health"
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        try:
+            with request.urlopen(url, timeout=2) as resp:
+                if resp.status == 200:
+                    return True
+        except Exception:
+            time.sleep(0.4)
+    return False
+
+
+def _open_browser(port: int) -> None:
+    if _wait_for_server(port):
+        try:
+            webbrowser.open(f"http://127.0.0.1:{port}")
+        except Exception:
+            pass
 
 
 def main() -> int:
     _ensure_history_dir()
     main_script = os.path.join(BASE_DIR, "main.py")
+    port = _pick_server_port(8501)
 
-    threading.Thread(target=_open_browser, daemon=True).start()
+    threading.Thread(target=_open_browser, args=(port,), daemon=True).start()
+    print(f"[launcher] Starting UI at http://127.0.0.1:{port}")
     sys.argv = [
         "streamlit",
         "run",
@@ -51,8 +79,8 @@ def main() -> int:
         "--server.headless=true",
         "--server.enableCORS=false",
         "--server.enableXsrfProtection=false",
-        "--server.address=localhost",
-        "--server.port=8501",
+        "--server.address=127.0.0.1",
+        f"--server.port={port}",
     ]
     return int(stcli.main())
 
