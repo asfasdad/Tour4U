@@ -1,0 +1,582 @@
+html {
+	/*将页面分为 100 份，1份 为 px，1rem 为 10份即 px */
+	/* font-size 为 75 px, 即 1rem 为 75 px */
+	font-size: 75px !important;
+	height: 100%;
+}
+body {
+	height: 100%;
+}
+.loading, .index, .introduce, .football, .food, .play, .car, .horse {
+	width: 100%;
+	height: 100%;
+	background-size: cover;
+}
+.fp-slidesNav {
+	margin-left: -112px !important;
+}
+.fp-slidesNav ul li a span {
+	border: none;
+}
+.fp-slidesNav ul li a span {
+	background: #ccc;
+}
+.fp-slidesNav ul li a.active span {
+	background: #fff;
+}
+/*进度条*/
+.loading {
+	position: absolute;
+	z-index: 9999;
+	background: url(http://7xkopm.com1.z0.glb.clouddn.com/0.shouye/logobg.jpg) no-repeat;
+	background-size: 100% 100%;
+}
+.progress {
+	position: relative;
+	top: 45%;
+	margin: 0 auto;
+	width: 60%;
+	height: 20px;
+	overflow: hidden;
+	background-color: #f5f5f5;
+	border-radius: 15px;
+	/*第一个数字是水平距离，第二个数字是垂直距离，第三个数字是模糊度*/
+	-webkit-box-shadow: inset 0 1px 2px rgba(0, 0, 0, .1);  /*添加阴影*/
+			box-shadow: inset 0 1px 2px rgba(0, 0, 0, .1); 		
+}
+.progress-bar {
+	float: left;
+	width: 0;
+	height: 100%;
+	font-size: 12px;
+	line-height: 20px;
+	color: #fff;
+	text-align: center;
+	background-color: #ff334a;
+	-webkit-box-shadow: inset 0 -1px 0 rgba(0, 0, 0, .15);
+					box-shadow: inset 0 -1px 0 rgba(0, 0, 0, .15);
+	/*为往后的进度条进度增加或减少的时候添加过渡动画*/				
+	-webkit-transition: width .6s ease;
+             -o-transition: width .6s ease;	
+             -ms-transition: width .6s ease;                
+             -moz-transition: width .6s ease;                
+             transition: width .6s ease;                			
+}
+.fp-next, .fp-prev {
+	display: none;
+}
+/*首页 index*/
+.index {
+	position: relative;
+	background: url(http://7xkopm.com1.z0.glb.clouddn.com/0.shouye/01.jpg) no-repeat;
+	background-size: 100% 100%; 
+}
+.index img {
+	position: absolute;
+	bottom: 0;
+	left: .5rem;
+	width: 60%;
+}
+
+/*介绍页面 introduce*/
+.introduce {
+  background: url(http://7xkopm.com1.z0.glb.clouddn.com/0.shouye/index-text.jpg) no-repeat;
+  background-size: 100% 100%;
+}
+.introduce img, .inf img {
+  display: block;
+  margin: 0 auto;
+  width: 80%;
+}
+
+/*详细页面 公共样式*/
+#fb-slide , #food-slide , #play-slide , #horse-slide , #car-slide ,#fb-content ,#food-content ,#play-content ,#car-content,#horse-content {
+            position: relative;
+}
+#fb-content ,#food-content ,#play-content ,#car-content,#horse-content {
+            height: 100%;
+            margin: 0 auto;
+}
+#fb-slide img, #food-slide img, #play-slide img, #horse-slide img, #car-slide img {
+            width: 100%;
+}
+.first , .second , .third , .fourth ,.first-tap , .second-tap , .third-tap , .fourth-tap ,.fb-tap{
+	position: absolute;
+	opacity: 0;
+            filter: alpha(opacity=0);
+}
+.first {
+	top: 12.04%;
+	left: 9.6%;
+	width: 41%;
+	/*max-width: 160px;*/
+}
+.second {
+	top: 25.39%;
+	right: 4.93%;
+	width: 53%;
+	/*max-width: 200px;*/
+}
+.third {
+	top: 46.74%;
+	left: 4.93%;
+	width: 50.4%;
+	/*max-width: 200px;*/
+}
+.fourth {
+	top: 67.11%;
+	right: 11.6%;
+	width: 41%;
+	/*max-width: 160px;*/
+}
+
+.first-tap, .second-tap, .third-tap, .fourth-tap {
+	width: 50.3%;
+}
+.first-tap {
+	top: 17.4%;
+	right: 12.6%;
+}
+.second-tap {
+	top: 36.9%;
+	left: 6.93%;
+}
+.third-tap {
+	top: 57.76%;
+	right: 6.93%;
+}
+.fourth-tap {
+	top: 77.7%;
+	left: 12.6%;	
+}
+.fb-tap {
+            width: 60%;      
+            left: 0%;
+            top: 3.44%;
+}
+#football-tap {
+            width: 76%;
+}
+@media screen and (min-width: 768px) {
+        .index img {
+            width: 50%;
+        }
+        .introduce img {
+            width: 70%;
+        }
+}
+@media screen and (min-width: 1024px) {
+        .index img {
+            width: 30%;
+        }
+        .inf .tel{
+            width: 50%;
+        }
+        .introduce img  {
+            width: 50%;
+        }
+}
+@media screen and (min-width: 1240px) {
+        .index img {
+            width: 20%;
+        }
+        .introduce img  {
+            width: 30%;
+        }
+}
+
+/*动画*/
+/*.animation .first ,.animation .second,.animation .third,.animation .fourth,.animation .first-tap ,.animation .second-tap,.animation .third-tap ,.animation .fourth-tap ,.animation .fb-tap {
+	opacity: 1;
+}*/
+#int-show ,#inf-show{
+	opacity: 0;
+      filter: alpha(opacity=0);
+}
+.animation .first {
+	animation: show .8s linear .4s forwards;
+            -o-animation: show .8s linear .4s forwards;
+            -ms-animation: show .8s linear .4s forwards;
+            -moz-animation: show .8s linear .4s forwards;
+	-webkit-animation: show .8s linear .4s forwards;	
+}
+.animation .second {
+            animation: show .8s linear .6s forwards;
+            -o-animation: show .8s linear .6s forwards;
+            -ms-animation: show .8s linear .6s forwards;
+            -moz-animation: show .8s linear .6s forwards;
+	-webkit-animation: show .8s linear .6s forwards;		
+}
+.animation .third {
+            animation: show .8s linear 1s forwards;
+            -o-animation: show .8s linear 1s forwards;
+            -ms-animation: show .8s linear 1s forwards;
+            -moz-animation: show .8s linear 1s forwards;
+	-webkit-animation: show .8s linear .8s forwards;	
+}
+.animation .fourth {
+	animation: show .8s linear 1s forwards;
+            -o-animation: show .8s linear 1s forwards;
+            -ms-animation: show .8s linear 1s forwards;
+            -moz-animation: show .8s linear 1s forwards;
+	-webkit-animation: show .8s linear 1s forwards;	
+}
+.animation .first-tap {
+        	animation: fadeInLeft .8s  linear .6s forwards;
+            -o-animation: fadeInLeft .8s  linear .6s forwards;
+            -ms-animation: fadeInLeft .8s  linear .6s forwards;
+            -moz-animation: fadeInLeft .8s  linear .6s forwards;
+	-webkit-animation : fadeInLeft .8s  linear .6s forwards;
+}
+.animation .second-tap {
+            animation: fadeInRight .8s  linear .8s forwards ;
+            -o-animation: fadeInRight .8s  linear .8s forwards ;
+            -ms-animation: fadeInRight .8s  linear .8s forwards ;
+	-moz-animation: fadeInRight .8s  linear .8s forwards ;
+	-webkit-animation : fadeInRight .8s  linear .8s forwards;
+}
+.animation .third-tap {
+	animation: fadeInLeft 1s linear .8s forwards;
+            -o-animation: fadeInLeft 1s linear .8s forwards;
+            -ms-animation: fadeInLeft 1s linear .8s forwards;
+            animation: fadeInLeft 1s linear .8s forwards;
+	-webkit-animation : fadeInLeft 1s linear .8s forwards;	
+}
+.animation .fourth-tap {
+	animation: fadeInRight 1.2s linear .8s forwards;
+            -o-animation: fadeInRight 1.2s linear .8s forwards;
+            -ms-animation: fadeInRight 1.2s linear .8s forwards;
+            -moz-animation: fadeInRight 1.2s linear .8s forwards;
+	-webkit-animation : fadeInRight 1.2s linear .8s forwards;
+	
+}
+.animation .fb-tap {
+	animation: fadeInLeft .8s forwards ;
+            -o-animation: fadeInLeft .8s forwards ;
+            -ms-animation: fadeInLeft .8s forwards ;
+            -moz-animation: fadeInLeft .8s forwards ;
+	-webkit-animation : fadeInLeft .8s forwards;
+}
+.animation #int-show {
+	animation: show .8s linear  forwards;
+            -o-animation: show .8s linear  forwards;
+            -ms-animation: show .8s linear  forwards;
+            -moz-animation: show .8s linear  forwards;
+	-webkit-animation: show .8s linear  forwards;		
+}
+.animation #inf-show {
+	animation: show .8s linear  forwards;
+             -o-animation: show .8s linear  forwards;
+             -ms-animation: show .8s linear  forwards;
+             -moz-animation: show .8s linear  forwards;
+	-webkit-animation: show .8s linear  forwards;		
+
+}
+/*详细界面 */
+.footBall ,.food,.play,.car,.horse {
+	position: relative;
+}
+.footBall {
+	background: url(http://7xkopm.com1.z0.glb.clouddn.com/1.football/0.png) no-repeat;	
+/*	background: url(../img/test.jpg) no-repeat;*/
+                background-size: 100% 100%;
+}
+
+.food {
+	background: url(http://7xkopm.com1.z0.glb.clouddn.com/2.food/5.png) no-repeat;
+             background-size: 100% 100%;
+}
+.play {
+	background: url(http://7xkopm.com1.z0.glb.clouddn.com/3.play/9.png) no-repeat;
+             background-size: 100% 100%;
+}
+.car {
+	background: url(http://7xkopm.com1.z0.glb.clouddn.com/4.car/15.png) no-repeat;
+             background-size: 100% 100%;
+}
+.horse {
+	background: url(http://7xkopm.com1.z0.glb.clouddn.com/5.horse/20.png) no-repeat;
+             background-size: 100% 100%;
+}
+/*信息页面 inf*/
+.inf {
+	width: 100%;
+	height: 100%;
+	background: url(http://7xkopm.com1.z0.glb.clouddn.com/0.shouye/04.png) no-repeat;
+	background-size: 100% 100%;
+}
+.tel {
+	margin: 0 auto;
+	padding: 40px 15px 15px 15px;
+	width: 80%;
+	height: 70%;
+	background: url(http://7xkopm.com1.z0.glb.clouddn.com/0.shouye/tel-text.png) no-repeat;
+	background-size: 100% 100%;
+	color: #fff;
+	font-size: 18px;
+	font-family: "Microsoft YaHei";
+}
+@media screen and (max-height: 670px) {
+	.tel {
+		height: 80%;
+	}
+}
+@media screen and (max-height: 640px) {
+	.tel {
+		height: 80%;
+	}
+}
+@media screen and (max-height: 568px) {
+	.tel {
+		font-size: 16px;
+	}
+}
+@media screen and (min-width: 760px ){
+            .tel {
+                padding: 40px 15px 15px 63px;
+                width: 63%;
+                font-size: 28px;
+            }
+}
+@media screen and (min-width: 1024px ){
+            .tel {
+                /*padding: 40px 15px 15px 63px;
+                width: 63%;*/
+                font-size: 18px;
+            }
+}
+/*.tel p:nth-child(even) {
+	text-indent: 0.666667rem;
+}
+.tel p:nth-child(7) ~ p {
+	text-indent: 0.666667rem;
+}
+.tel p:nth-child(11) {
+	margin-top: 20px;
+}*/
+.tel p {
+  margin: 5px 0;
+}
+.tel p span {
+  display: inline-block;
+  text-indent: 0.3rem;
+}
+.tel p:nth-child(8) {
+  margin-top: 20px;
+}
+.tel p:nth-child(5), .tel p:nth-child(6), .tel p:nth-child(7), .tel p:nth-child(9), .tel p:nth-child(10), .tel p:nth-child(11), .tel p:nth-child(12) {
+      text-indent: 0.6666667rem;
+}
+/*fadeInLeft 动画*/
+@-webkit-keyframes fadeInLeft {
+  from {
+    opacity: 0;
+    filter: alpha(opacity=0);
+    -webkit-transform: translate3d(-100%, 0, 0);
+  }
+
+  to {
+    opacity: 1;
+    filter: alpha(opacity=100);
+    -webkit-transform: none;
+  }
+}
+
+@-o-keyframes fadeInLeft {
+  from {
+    opacity: 0;
+    filter: alpha(opacity=0);
+    -webkit-transform: translate3d(-100%, 0, 0);
+    -o-transform: translate3d(-100%, 0, 0);
+  }
+
+  to {
+    opacity: 1;
+    filter: alpha(opacity=100);
+    -webkit-transform: none;
+    -o-transform: none;
+  }
+}
+
+@-ms-keyframes fadeInLeft {
+  from {
+    opacity: 0;
+    filter: alpha(opacity=0);
+    -webkit-transform: translate3d(-100%, 0, 0);
+    -ms-transform: translate3d(-100%, 0, 0);
+  }
+
+  to {
+    opacity: 1;
+    filter: alpha(opacity=100);
+    -webkit-transform: none;
+    -ms-transform: none;
+  }
+}
+
+@-moz-keyframes fadeInLeft {
+  from {
+    opacity: 0;
+    filter: alpha(opacity=0);
+    -webkit-transform: translate3d(-100%, 0, 0);
+    -moz-transform: translate3d(-100%, 0, 0);
+  }
+
+  to {
+    opacity: 1;
+    filter: alpha(opacity=100);
+    -webkit-transform: none;
+    -moz-transform: none;
+  }
+}
+
+@keyframes fadeInLeft {
+  from {
+    opacity: 0;
+    filter: alpha(opacity=0);
+    -webkit-transform: translate3d(-100%, 0, 0);
+    transform: translate3d(-100%, 0, 0);
+  }
+
+  to {
+    opacity: 1;
+    filter: alpha(opacity=100);
+    -webkit-transform: none;
+    transform: none;
+  }
+}
+
+/* fadeInRight 动画*/
+
+@-webkit-keyframes fadeInRight {
+  from {
+    opacity: 0;
+    filter: alpha(opacity=0);
+    -webkit-transform: translate3d(100%, 0, 0);
+    transform: translate3d(100%, 0, 0);
+  }
+
+  to {
+    opacity: 1;
+    filter: alpha(opacity=100);
+    -webkit-transform: none;
+    transform: none;
+  }
+}
+
+@keyframes fadeInRight {
+  from {
+    opacity: 0;
+    filter: alpha(opacity=0);
+    -webkit-transform: translate3d(100%, 0, 0);
+    transform: translate3d(100%, 0, 0);
+  }
+
+  to {
+    opacity: 1;
+    filter: alpha(opacity=100);
+    -webkit-transform: none;
+    transform: none;
+  }
+}
+
+@-moz-keyframes fadeInRight {
+  from {
+    opacity: 0;
+    filter: alpha(opacity=0);
+    -webkit-transform: translate3d(100%, 0, 0);
+    -moz-transform: translate3d(100%, 0, 0);
+  }
+
+  to {
+    opacity: 1;
+    filter: alpha(opacity=100);
+    -webkit-transform: none;
+    -moz-transform: none;
+  }
+}
+
+@-ms-keyframes fadeInRight {
+  from {
+    opacity: 0;
+    filter: alpha(opacity=0);
+    -webkit-transform: translate3d(100%, 0, 0);
+    -ms-transform: translate3d(100%, 0, 0);
+  }
+
+  to {
+    opacity: 1;
+    filter: alpha(opacity=100);
+    -webkit-transform: none;
+    -ms-transform: none;
+  }
+}
+
+@-o-keyframes fadeInRight {
+  from {
+    opacity: 0;
+    filter: alpha(opacity=0);
+    -webkit-transform: translate3d(100%, 0, 0);
+   -o-transform: translate3d(100%, 0, 0);
+  }
+
+  to {
+    opacity: 1;
+    filter: alpha(opacity=100);
+    -webkit-transform: none;
+    -o-transform: none;
+  }
+}
+/*show 动画 浮现*/
+@keyframes show {
+  from {
+    opacity: 0;
+    filter: alpha(opacity=0);
+  }
+  to {
+    opacity: 1;
+    filter: alpha(opacity=100);
+  }
+}
+@-webkit-keyframes show {
+  from {
+    opacity: 0;
+    filter: alpha(opacity=0);
+  }
+  to {
+    opacity: 1;
+    filter: alpha(opacity=100);
+  }
+}
+
+@-ms-keyframes show {
+  from {
+    opacity: 0;
+    filter: alpha(opacity=0);
+  }
+  to {
+    opacity: 1;
+    filter: alpha(opacity=100);
+  }
+}
+@-moz-keyframes show {
+  from {
+    opacity: 0;
+    filter: alpha(opacity=0);
+  }
+  to {
+    opacity: 1;
+    filter: alpha(opacity=100);
+  }
+}
+
+@-o-keyframes show {
+  from {
+    opacity: 0;
+    filter: alpha(opacity=0);
+  }
+  to {
+    opacity: 1;
+    filter: alpha(opacity=100);
+  }
+}
