@@ -80,6 +80,8 @@ def main() -> int:
         "--server.enableCORS=false",
         "--server.enableXsrfProtection=false",
         "--server.address=127.0.0.1",
+        "--server.runOnSave=false",
+        "--server.fileWatcherType=none",
         f"--server.port={port}",
     ]
     return int(stcli.main())

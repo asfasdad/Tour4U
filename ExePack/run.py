@@ -62,6 +62,8 @@ if __name__ == "__main__":
         "--browser.gatherUsageStats=false",
         "--server.headless=true",  # 保持 headless 为 true，这更稳定，通过上面的线程来手动打开
         "--server.address=127.0.0.1",
+        "--server.runOnSave=false",
+        "--server.fileWatcherType=none",
         f"--server.port={port}",
     ]
     sys.exit(stcli.main())
