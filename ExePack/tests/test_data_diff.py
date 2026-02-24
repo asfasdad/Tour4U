@@ -21,6 +21,8 @@ def test_sku_fingerprint_is_stable_for_query_changes():
 def test_infer_price_from_text_supports_common_symbols():
     assert data_diff.infer_price_from_text("Now only $1,299.50") == 1299.5
     assert data_diff.infer_price_from_text("Price 88€") == 88.0
+    assert data_diff.infer_price_from_text("Only £79.99 today") == 79.99
+    assert data_diff.infer_price_from_text("USD 249.00") == 249.0
     assert data_diff.infer_price_from_text("N/A") is None
 
 

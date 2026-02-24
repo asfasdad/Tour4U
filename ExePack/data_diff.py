@@ -33,10 +33,16 @@ def infer_price_from_text(text: str) -> Optional[float]:
     patterns = [
         r"\$\s*([\d,]+\.?\d*)",
         r"([\d,]+\.?\d*)\s*\$",
+        r"£\s*([\d,]+\.?\d*)",
+        r"([\d,]+\.?\d*)\s*£",
         r"¥\s*([\d,]+\.?\d*)",
         r"([\d,]+\.?\d*)\s*¥",
         r"€\s*([\d,]+\.?\d*)",
         r"([\d,]+\.?\d*)\s*€",
+        r"USD\s*([\d,]+\.?\d*)",
+        r"([\d,]+\.?\d*)\s*USD",
+        r'"price"\s*:\s*"?([\d,]+\.?\d*)"?',
+        r'"price_amount"\s*:\s*"?([\d,]+\.?\d*)"?',
     ]
     for pat in patterns:
         m = re.search(pat, text)
