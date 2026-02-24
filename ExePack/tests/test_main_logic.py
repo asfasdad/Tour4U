@@ -5,6 +5,7 @@ import os
 import re
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from urllib.parse import urlparse
 
 import pandas as pd
@@ -19,6 +20,7 @@ def _load_main_functions(names, extra_globals=None):
     module = ast.Module(body=selected, type_ignores=[])
     code = compile(module, filename="main.py", mode="exec")
     namespace = {
+        "Any": Any,
         "hashlib": hashlib,
         "json": json,
         "os": os,
@@ -187,6 +189,109 @@ def test_select_prev_history_filename_fallback_to_latest_earlier_when_campaign_d
     ]
     prev_name = select_prev("20260206_130434_camping chair.csv", files)
     assert prev_name == "20260206_112051_ultralight tent.csv"
+
+
+def test_get_unified_filter_options_extracts_domain_keyword_product():
+    funcs = _load_main_functions(["get_unified_filter_options"])
+    get_opts = funcs["get_unified_filter_options"]
+    df = pd.DataFrame(
+        [
+            {"Domain": "b.com", "Keyword": "k2", "Product": "p2"},
+            {"Domain": "a.com", "Keyword": "k1", "Product": "p1"},
+        ]
+    )
+    opts = get_opts(df)
+    assert opts["domains"] == ["a.com", "b.com"]
+    assert opts["keywords"] == ["k1", "k2"]
+    assert opts["products"] == ["p1", "p2"]
+
+
+def test_build_unified_analysis_data_filters_and_builds_trend():
+    funcs = _load_main_functions(["build_unified_analysis_data"])
+    build_data = funcs["build_unified_analysis_data"]
+
+    df = pd.DataFrame(
+        [
+            {
+                "Domain": "x.com",
+                "Keyword": "tent",
+                "Product": "T1",
+                "Timestamp": "2026-02-20 10:00",
+                "Price": 10,
+                "Review Count": 1,
+            },
+            {
+                "Domain": "x.com",
+                "Keyword": "tent",
+                "Product": "T1",
+                "Timestamp": "2026-02-21 10:00",
+                "Price": 12,
+                "Review Count": 2,
+            },
+            {
+                "Domain": "y.com",
+                "Keyword": "chair",
+                "Product": "C1",
+                "Timestamp": "2026-02-21 11:00",
+                "Price": 8,
+                "Review Count": 4,
+            },
+        ]
+    )
+
+    result = build_data(df, domain="x.com", keyword="tent", product="T1")
+    assert len(result["filtered"]) == 2
+    assert int(result["summary"]["records"]) == 2
+    assert int(result["summary"]["unique_products"]) == 1
+    trend = result["trend"]
+    assert len(trend) == 2
+    assert "avg_price" in trend.columns
+
+
+def test_parse_blocked_domains_and_domain_match():
+    funcs = _load_main_functions(["_parse_blocked_domains", "_is_blocked_domain"])
+    parse_blocked = funcs["_parse_blocked_domains"]
+    is_blocked = funcs["_is_blocked_domain"]
+
+    blocked = parse_blocked(" https://my.com,shop.my.com ; test.com\nmy.com ")
+    assert blocked == ["my.com", "shop.my.com", "test.com"]
+    assert is_blocked("shop.my.com", blocked) is True
+    assert is_blocked("a.shop.my.com", blocked) is True
+    assert is_blocked("other.com", blocked) is False
+
+
+def test_extract_review_count_from_html_prefers_json_ld():
+    extract_reviews = _load_main_functions(["_extract_review_count_from_html"])["_extract_review_count_from_html"]
+    html = """
+    <script type='application/ld+json'>
+    {"aggregateRating":{"reviewCount":"1234","ratingValue":"4.7"}}
+    </script>
+    <div>8 reviews</div>
+    """
+    assert extract_reviews(html) == 1234
+
+
+def test_extract_review_count_from_html_regex_fallback():
+    extract_reviews = _load_main_functions(["_extract_review_count_from_html"])["_extract_review_count_from_html"]
+    assert extract_reviews("This item has 89 reviews and counting") == 89
+    assert extract_reviews("Rated by 456 ratings") == 456
+
+
+def test_compute_adgroup_changes_returns_daily_deltas():
+    compute_changes = _load_main_functions(["compute_adgroup_changes"])["compute_adgroup_changes"]
+    df = pd.DataFrame(
+        [
+            {"Timestamp": "2026-02-24 10:00", "广告组ID": "g1"},
+            {"Timestamp": "2026-02-24 11:00", "广告组ID": "g2"},
+            {"Timestamp": "2026-02-25 10:00", "广告组ID": "g2"},
+            {"Timestamp": "2026-02-25 11:00", "广告组ID": "g3"},
+        ]
+    )
+    out = compute_changes(df)
+    assert len(out) == 2
+    assert int(out.iloc[0]["adgroup_count"]) == 2
+    assert int(out.iloc[1]["new_adgroups"]) == 1
+    assert int(out.iloc[1]["removed_adgroups"]) == 1
 
 
 def test_minimal_e2e_flow_with_mocked_url_resolution():

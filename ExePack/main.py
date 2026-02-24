@@ -27,6 +27,7 @@ import json
 import altair as alt
 import socket
 import subprocess
+from typing import Any
 
 from llm_providers import get_provider, PLATFORM_MODELS, DEFAULT_BASE_URLS
 from session_store import (
@@ -97,6 +98,87 @@ def _extract_campaign_id_from_url(url: str) -> str:
 
 def _extract_adgroup_id_from_url(url: str) -> str:
     return _get_query_param(url, ["adgroupid", "adgroup_id", "adset_id", "adsetid"])
+
+
+def _parse_blocked_domains(text: str) -> list[str]:
+    raw = str(text or "")
+    parts = [p.strip().lower() for p in re.split(r"[,;\n\s]+", raw) if p and p.strip()]
+    out: list[str] = []
+    for p in parts:
+        p = p.replace("https://", "").replace("http://", "").strip("/")
+        if p and p not in out:
+            out.append(p)
+    return out
+
+
+def _is_blocked_domain(domain: str, blocked_domains: list[str]) -> bool:
+    d = str(domain or "").lower().split(":")[0].strip()
+    if not d:
+        return False
+    for b in blocked_domains or []:
+        bb = str(b or "").lower().split(":")[0].strip()
+        if not bb:
+            continue
+        if d == bb or d.endswith("." + bb):
+            return True
+    return False
+
+
+def _extract_review_count_from_html(html: str) -> int | None:
+    content = html or ""
+
+    def _to_int(v) -> int | None:
+        try:
+            if v is None:
+                return None
+            s = str(v).strip().replace(",", "")
+            if not s:
+                return None
+            n = int(float(s))
+            return n if n >= 0 else None
+        except Exception:
+            return None
+
+    # JSON-LD 优先
+    try:
+        scripts = re.findall(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', content, flags=re.I | re.S)
+        for raw in scripts:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except Exception:
+                continue
+            objs = data if isinstance(data, list) else [data]
+            for obj in objs:
+                if not isinstance(obj, dict):
+                    continue
+                agg = obj.get("aggregateRating")
+                if isinstance(agg, dict):
+                    n = _to_int(agg.get("reviewCount") or agg.get("ratingCount"))
+                    if n is not None:
+                        return n
+                n = _to_int(obj.get("reviewCount") or obj.get("ratingCount"))
+                if n is not None:
+                    return n
+    except Exception:
+        pass
+
+    # 文本兜底
+    for pat in [
+        r"([\d,]{1,12})\s*reviews?\b",
+        r"([\d,]{1,12})\s*ratings?\b",
+        r"reviewCount\s*[:=]\s*[\"']?([\d,]{1,12})",
+        r"([\d,]{1,12})\s*条?评论",
+        r"([\d,]{1,12})\s*评",
+    ]:
+        m = re.search(pat, content, re.I)
+        if m:
+            n = _to_int(m.group(1))
+            if n is not None:
+                return n
+    return None
 
 
 def _find_free_port(preferred_range: tuple[int, int] = (20000, 40000)) -> int:
@@ -530,10 +612,10 @@ except Exception as _e:
 def parse_shopify_product(html_content: str) -> dict:
     """解析 Shopify 商品页（尽量只用 JSON-LD + OG availability）。
 
-    返回：{price, currency, compare_at_price, is_available}
+    返回：{price, currency, compare_at_price, is_available, review_count}
     解析失败时返回空字段，不抛异常。
     """
-    result = {"price": None, "currency": None, "compare_at_price": None, "is_available": None}
+    result = {"price": None, "currency": None, "compare_at_price": None, "is_available": None, "review_count": None}
     html = html_content or ""
 
     def _normalize_availability(val: str) -> int | None:
@@ -589,6 +671,18 @@ def parse_shopify_product(html_content: str) -> dict:
                     if result["is_available"] is None:
                         avail = offers.get("availability") or obj.get("availability")
                         result["is_available"] = _normalize_availability(avail)
+                # 评论数（JSON-LD 常见 aggregateRating.reviewCount）
+                if result["review_count"] is None:
+                    agg = obj.get("aggregateRating")
+                    if isinstance(agg, dict):
+                        val = agg.get("reviewCount") or agg.get("ratingCount")
+                    else:
+                        val = obj.get("reviewCount") or obj.get("ratingCount")
+                    if val is not None and str(val).strip() != "":
+                        try:
+                            result["review_count"] = int(float(str(val).replace(",", "")))
+                        except Exception:
+                            pass
                 # compare_at_price：JSON-LD 通常没有，留空
             if result["price"] is not None or result["is_available"] is not None:
                 break
@@ -959,6 +1053,160 @@ def ensure_domain_and_product_id(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def get_unified_filter_options(df: pd.DataFrame) -> dict[str, list[str]]:
+    """提取统一分析面板的可选项（网站/关键词/产品）。"""
+    if df is None or df.empty:
+        return {"domains": [], "keywords": [], "products": []}
+
+    out = df.copy()
+    if "domain" not in out.columns:
+        if "Domain" in out.columns:
+            out["domain"] = out["Domain"].astype(str)
+        elif "Final URL" in out.columns:
+            out["domain"] = out["Final URL"].astype(str).apply(lambda u: urlparse(u).netloc)
+        else:
+            out["domain"] = ""
+
+    keyword_col = "Keyword" if "Keyword" in out.columns else ("keyword" if "keyword" in out.columns else None)
+    product_col = "Product" if "Product" in out.columns else ("product_title" if "product_title" in out.columns else None)
+
+    domains = sorted([x for x in out["domain"].astype(str).dropna().unique().tolist() if str(x).strip()])
+    keywords = sorted([x for x in out[keyword_col].astype(str).dropna().unique().tolist() if str(x).strip()]) if keyword_col else []
+    products = sorted([x for x in out[product_col].astype(str).dropna().unique().tolist() if str(x).strip()]) if product_col else []
+
+    return {"domains": domains, "keywords": keywords, "products": products}
+
+
+def build_unified_analysis_data(
+    df: pd.DataFrame,
+    domain: str = "",
+    keyword: str = "",
+    product: str = "",
+) -> dict[str, Any]:
+    """按网站/关键词/产品过滤，并生成按天变化趋势。"""
+    if df is None or df.empty:
+        return {
+            "filtered": pd.DataFrame(),
+            "trend": pd.DataFrame(columns=["date", "records", "unique_products", "avg_price", "avg_reviews"]),
+            "summary": {"records": 0, "unique_products": 0, "avg_price": None, "avg_reviews": None},
+        }
+
+    out = df.copy()
+    if "domain" not in out.columns:
+        if "Domain" in out.columns:
+            out["domain"] = out["Domain"].astype(str)
+        elif "Final URL" in out.columns:
+            out["domain"] = out["Final URL"].astype(str).apply(lambda u: urlparse(u).netloc)
+        else:
+            out["domain"] = ""
+
+    keyword_col = "Keyword" if "Keyword" in out.columns else ("keyword" if "keyword" in out.columns else None)
+    product_col = "Product" if "Product" in out.columns else ("product_title" if "product_title" in out.columns else None)
+
+    if domain:
+        out = out[out["domain"].astype(str) == str(domain)]
+    if keyword and keyword_col:
+        out = out[out[keyword_col].astype(str) == str(keyword)]
+    if product and product_col:
+        out = out[out[product_col].astype(str) == str(product)]
+
+    ts_col = "Timestamp" if "Timestamp" in out.columns else ("observed_at" if "observed_at" in out.columns else None)
+    if ts_col:
+        ts_source = out[ts_col]
+        if isinstance(ts_source, pd.DataFrame):
+            ts_source = ts_source.iloc[:, 0]
+        ts = pd.to_datetime(ts_source, errors="coerce")
+    else:
+        ts = pd.Series([pd.NaT] * len(out), index=out.index)
+
+    if isinstance(ts, pd.DatetimeIndex):
+        out["__date"] = [v.date() if pd.notna(v) else pd.NaT for v in ts]
+    elif isinstance(ts, pd.Series):
+        out["__date"] = ts.apply(lambda v: v.date() if pd.notna(v) else pd.NaT)
+    else:
+        out["__date"] = pd.Series([pd.NaT] * len(out), index=out.index)
+
+    if "Price" in out.columns:
+        out["__price"] = pd.to_numeric(out["Price"], errors="coerce")
+    else:
+        out["__price"] = pd.NA
+    if "Review Count" in out.columns:
+        out["__reviews"] = pd.to_numeric(out["Review Count"], errors="coerce")
+    else:
+        out["__reviews"] = pd.NA
+
+    product_count_col = product_col if product_col else "domain"
+
+    trend = (
+        out.dropna(subset=["__date"])
+        .groupby("__date")
+        .agg(
+            records=("__date", "size"),
+            unique_products=(product_count_col, lambda s: s.astype(str).nunique()),
+            avg_price=("__price", "mean"),
+            avg_reviews=("__reviews", "mean"),
+        )
+        .reset_index()
+        .rename(columns={"__date": "date"})
+        .sort_values("date")
+    )
+
+    summary = {
+        "records": int(len(out)),
+        "unique_products": int(out[product_count_col].astype(str).nunique()) if len(out) > 0 else 0,
+        "avg_price": float(pd.to_numeric(out["__price"], errors="coerce").mean()) if len(out) > 0 else None,
+        "avg_reviews": float(pd.to_numeric(out["__reviews"], errors="coerce").mean()) if len(out) > 0 else None,
+    }
+
+    return {"filtered": out.drop(columns=["__date", "__price", "__reviews"], errors="ignore"), "trend": trend, "summary": summary}
+
+
+def compute_adgroup_changes(df: pd.DataFrame) -> pd.DataFrame:
+    """按天统计广告组变化（new/removed/net_change）。"""
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["date", "adgroup_count", "new_adgroups", "removed_adgroups", "net_change"])
+
+    out = df.copy()
+    if "广告组ID" in out.columns:
+        grp_col = "广告组ID"
+    elif "gad_campaignid" in out.columns:
+        grp_col = "gad_campaignid"
+    else:
+        return pd.DataFrame(columns=["date", "adgroup_count", "new_adgroups", "removed_adgroups", "net_change"])
+
+    ts_col = "Timestamp" if "Timestamp" in out.columns else ("observed_at" if "observed_at" in out.columns else None)
+    if not ts_col:
+        return pd.DataFrame(columns=["date", "adgroup_count", "new_adgroups", "removed_adgroups", "net_change"])
+
+    dt = pd.to_datetime(out[ts_col], errors="coerce")
+    out = out[dt.notna()].copy()
+    if out.empty:
+        return pd.DataFrame(columns=["date", "adgroup_count", "new_adgroups", "removed_adgroups", "net_change"])
+    out["__date"] = dt[dt.notna()].dt.date
+    out[grp_col] = out[grp_col].astype(str).fillna("").str.strip()
+    out = out[out[grp_col] != ""]
+    if out.empty:
+        return pd.DataFrame(columns=["date", "adgroup_count", "new_adgroups", "removed_adgroups", "net_change"])
+
+    rows: list[dict[str, Any]] = []
+    prev_set: set[str] = set()
+    for d in sorted(out["__date"].unique()):
+        cur_set = set(out.loc[out["__date"] == d, grp_col].astype(str).tolist())
+        added = cur_set - prev_set
+        removed = prev_set - cur_set
+        rows.append(
+            {
+                "date": d,
+                "adgroup_count": len(cur_set),
+                "new_adgroups": len(added),
+                "removed_adgroups": len(removed),
+                "net_change": len(added) - len(removed),
+            }
+        )
+        prev_set = cur_set
+    return pd.DataFrame(rows)
+
+
 # --- 页面配置 ---
 st.set_page_config(page_title="竞品分析 v15 重构版", layout="wide", page_icon="🧠")
 st.title("🚀 竞品分析 (v15 架构重构版)")
@@ -1189,8 +1437,12 @@ with st.sidebar:
             st.rerun()
 
     with st.expander("📡 新建抓取任务", expanded=True):
-        target_domain = st.text_input("🎯 目标域名 (留空抓所有)", value="", placeholder="例如 naturehike.com")
-        campaign_name = st.text_input("📌 Campaign Name (专项计划)", value="", placeholder="例如：2026春季大促")
+        blocked_domains_input = st.text_input(
+            "🚫 屏蔽域名 (逗号分隔，留空不屏蔽)",
+            value="",
+            placeholder="例如 yourbrand.com, shop.yourbrand.com",
+        )
+        st.caption("已移除专项计划输入；历史文件名仅按时间与关键词生成。")
         keywords_input = st.text_area("🔑 关键词列表 (逗号分隔)", value="ultralight tent, camping chair", height=80)
         c_set1, c_set2 = st.columns(2)
         max_workers = c_set1.slider("并发窗口", 1, 4, 1)  # 降低默认并发，减少异常
@@ -1539,11 +1791,12 @@ def consumer_worker(link_queue, shared_list, lock, counters, is_running, setting
                 with lock:
                     counters["fail"] += 1
                 continue
-            domain_filter = settings.get("domain", "")
-            if domain_filter and domain_filter not in final_url:
+            blocked_domains = settings.get("blocked_domains", [])
+            final_domain = urlparse(final_url).netloc
+            if _is_blocked_domain(final_domain, blocked_domains):
                 continue
             ad_type = "Shopping (图)" if "shopping" in raw_url else "Search (文)"
-            domain = urlparse(final_url).netloc
+            domain = final_domain
 
             # --- 稳定性加固：requests 单例抓取 + 解析不全标记待分析（模块二）---
             parse_strategy = "A"
@@ -1562,6 +1815,7 @@ def consumer_worker(link_queue, shared_list, lock, counters, is_running, setting
             shopify_currency = None
             shopify_compare_at = None
             shopify_is_available = None
+            shopify_review_count = None
             image_url = None
             try:
                 resp = session.get(final_url, headers=headers, proxies=proxies, timeout=10)
@@ -1584,9 +1838,14 @@ def consumer_worker(link_queue, shared_list, lock, counters, is_running, setting
                         title = re.sub(r"\s+", " ", m_title2.group(1)).strip()[:120] or title
                 # 价格/评论启发式
                 price = infer_price_from_text(html[:4000])
-                m_rev = re.search(r'(\d{1,6})\s*reviews?', html[:8000], re.I)
-                if m_rev:
-                    review_count = int(m_rev.group(1))
+                if price is None:
+                    m_meta_price = re.search(r'<meta[^>]+property=["\']product:price:amount["\'][^>]+content=["\']([^"\']+)["\']', html, re.I)
+                    if m_meta_price:
+                        try:
+                            price = float(str(m_meta_price.group(1)).replace(",", "").strip())
+                        except Exception:
+                            pass
+                review_count = _extract_review_count_from_html(html[:15000])
 
                 # Shopify 商品详情解析（JSON-LD + OG availability）
                 try:
@@ -1595,8 +1854,11 @@ def consumer_worker(link_queue, shared_list, lock, counters, is_running, setting
                     shopify_currency = shopify.get("currency")
                     shopify_compare_at = shopify.get("compare_at_price")
                     shopify_is_available = shopify.get("is_available")
+                    shopify_review_count = shopify.get("review_count")
                     if shopify_price is not None:
                         price = shopify_price
+                    if review_count is None and shopify_review_count is not None:
+                        review_count = shopify_review_count
                 except Exception as e:
                     # 解析失败不影响主流程
                     error_msg = (error_msg + " | " if error_msg else "") + f"shopify_parse:{e}"
@@ -1734,15 +1996,13 @@ if start_btn:
                         pass
             if not current_save_filename or not current_save_path:
                 safe_summary = "".join([c for c in k_list[0][:20] if c.isalnum() or c in (" ", "_")]).strip()
-                safe_campaign = "".join([c for c in campaign_name[:20] if c.isalnum() or c in (" ", "_")]).strip()
-                campaign_part = f"_{safe_campaign}" if safe_campaign else ""
-                current_save_filename = f"{task_start}{campaign_part}_{safe_summary}.csv"
+                current_save_filename = f"{task_start}_{safe_summary}.csv"
                 current_save_path = os.path.join(HISTORY_DIR, current_save_filename)
 
             settings = {
                 "proxy": proxy_setting,
-                "domain": target_domain.strip(),
-                "campaign": campaign_name.strip(),
+                "blocked_domains": _parse_blocked_domains(blocked_domains_input),
+                "campaign": "",
                 "pages": pages_to_scrape,
                 "gl": gl_code,
                 "hl": hl_code,
@@ -1822,10 +2082,11 @@ if page == "📊 总览" and st.session_state.current_df is not None:
     csv_bytes = df.to_csv(index=False).encode("utf-8")
     st.download_button("📥 下载当前数据 CSV", csv_bytes, "analysis_data.csv", "text/csv", key="dl_csv_main")
 
-    tab_report, tab_ai, tab_adgroup, tab_decoder, tab_diff = st.tabs([
+    tab_report, tab_ai, tab_adgroup, tab_focus, tab_decoder, tab_diff = st.tabs([
         "📄 深度报告",
         "💬 AI 数据顾问",
         "📁 广告组视图",
+        "🎯 单维度分析",
         "🧩 投放策略解密 (Ad Strategy Decoder)",
         "⚖️ Batch Diff",
     ])
@@ -1904,7 +2165,7 @@ if page == "📊 总览" and st.session_state.current_df is not None:
     with tab_adgroup:
         df_parsed, df_dedup = adparser_enrich_and_dedup(df)
 
-        t_raw, t_tree = st.tabs(["视图 1：原始数据表", "视图 2：广告活动架构（树状图）"])
+        t_raw, t_tree, t_change = st.tabs(["视图 1：原始数据表", "视图 2：广告活动架构（树状图）", "视图 3：广告组变化"])
 
         with t_raw:
             show_cols = [
@@ -1971,13 +2232,122 @@ if page == "📊 总览" and st.session_state.current_df is not None:
                                             col_cfg2["Final URL"] = st.column_config.LinkColumn("URL", display_text="打开")
                                         st.dataframe(view_df, width="stretch", column_config=col_cfg2)
 
+        with t_change:
+            st.markdown("**广告组变化（按日期）**")
+            domain_opts = sorted([d for d in df_parsed.get("Domain", pd.Series(dtype="object")).astype(str).dropna().unique().tolist() if str(d).strip()]) if isinstance(df_parsed, pd.DataFrame) and not df_parsed.empty else []
+            adg_domain_pick = st.selectbox("选择网站（广告组变化）", ["全部"] + domain_opts, index=0, key="adg_domain_pick")
+            adg_base = df_parsed.copy() if isinstance(df_parsed, pd.DataFrame) else pd.DataFrame()
+            if adg_domain_pick != "全部" and not adg_base.empty and "Domain" in adg_base.columns:
+                adg_base = adg_base[adg_base["Domain"].astype(str) == adg_domain_pick]
+            adg_change_df = compute_adgroup_changes(adg_base)
+            if adg_change_df is None or adg_change_df.empty:
+                st.info("当前筛选下暂无可用广告组时间变化数据（需要 Timestamp + 广告组ID/gad_campaignid）。")
+            else:
+                adg_chart = adg_change_df.copy()
+                adg_chart["date"] = pd.to_datetime(adg_chart["date"], errors="coerce")
+                adg_chart = adg_chart.dropna(subset=["date"]).set_index("date")
+                cols = [c for c in ["adgroup_count", "new_adgroups", "removed_adgroups", "net_change"] if c in adg_chart.columns]
+                if cols and not adg_chart.empty:
+                    st.line_chart(adg_chart[cols], height=220)
+                st.dataframe(adg_change_df, width="stretch")
+
+    with tab_focus:
+        st.subheader("🎯 单网站 / 单关键词 / 单产品联合分析")
+        opts = get_unified_filter_options(df)
+
+        col_f1, col_f2, col_f3 = st.columns(3)
+        domain_pick = col_f1.selectbox("网站", ["全部"] + opts["domains"], index=0, key="focus_domain")
+        keyword_pick = col_f2.selectbox("关键词", ["全部"] + opts["keywords"], index=0, key="focus_keyword")
+        product_pick = col_f3.selectbox("产品", ["全部"] + opts["products"], index=0, key="focus_product")
+
+        result = build_unified_analysis_data(
+            df,
+            domain="" if domain_pick == "全部" else domain_pick,
+            keyword="" if keyword_pick == "全部" else keyword_pick,
+            product="" if product_pick == "全部" else product_pick,
+        )
+
+        focus_df = result["filtered"]
+        trend_df = result["trend"]
+        summary = result["summary"]
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("记录数", int(summary.get("records", 0) or 0), None)
+        m2.metric("产品数", int(summary.get("unique_products", 0) or 0), None)
+        avg_price = summary.get("avg_price")
+        avg_reviews = summary.get("avg_reviews")
+        m3.metric("均价", f"{avg_price:.2f}" if avg_price is not None and pd.notna(avg_price) else "-")
+        m4.metric("平均评论", f"{avg_reviews:.2f}" if avg_reviews is not None and pd.notna(avg_reviews) else "-")
+
+        total_n = int(len(focus_df)) if focus_df is not None else 0
+        if total_n > 0:
+            price_cov = float(pd.to_numeric(focus_df["Price"], errors="coerce").notna().mean() * 100.0) if "Price" in focus_df.columns else 0.0
+            review_cov = float(pd.to_numeric(focus_df["Review Count"], errors="coerce").notna().mean() * 100.0) if "Review Count" in focus_df.columns else 0.0
+            st.caption(f"价格识别覆盖率: {price_cov:.1f}% | 评论识别覆盖率: {review_cov:.1f}%")
+            if "Page Type" in focus_df.columns:
+                page_dist = focus_df["Page Type"].astype(str).value_counts(dropna=False)
+                collection_ratio = float(page_dist.get("Collection (列表页)", 0) / max(total_n, 1) * 100.0)
+                if collection_ratio >= 60:
+                    st.info(f"当前筛选中列表页占比 {collection_ratio:.1f}%，列表页通常不稳定提供单品价格/评论，建议切到产品页样本观察。")
+            if price_cov < 20 or review_cov < 20:
+                st.warning("当前站点价格/评论抓取覆盖率较低，常见原因是页面 JS 动态渲染或反爬限制。建议增加采样轮次或切换代理后重试。")
+
+        if trend_df is not None and not trend_df.empty:
+            st.markdown("**时间变化趋势（日维度）**")
+            chart_cols = [c for c in ["records", "unique_products", "avg_price", "avg_reviews"] if c in trend_df.columns]
+            chart_df = trend_df.copy()
+            chart_df["date"] = pd.to_datetime(chart_df["date"], errors="coerce")
+            chart_df = chart_df.dropna(subset=["date"]).set_index("date")
+            if chart_cols and not chart_df.empty:
+                st.line_chart(chart_df[chart_cols], height=260)
+
+                first_row = chart_df.iloc[0]
+                last_row = chart_df.iloc[-1]
+                d1, d2, d3 = st.columns(3)
+                d1.metric("记录变化", int(last_row.get("records", 0)), f"{int(last_row.get('records', 0) - first_row.get('records', 0)):+d}")
+                if "avg_price" in chart_df.columns and pd.notna(first_row.get("avg_price")) and pd.notna(last_row.get("avg_price")):
+                    d2.metric("均价变化", f"{float(last_row.get('avg_price')):.2f}", f"{(float(last_row.get('avg_price')) - float(first_row.get('avg_price'))):+.2f}")
+                else:
+                    d2.metric("均价变化", "-", None)
+                if "avg_reviews" in chart_df.columns and pd.notna(first_row.get("avg_reviews")) and pd.notna(last_row.get("avg_reviews")):
+                    d3.metric("评论均值变化", f"{float(last_row.get('avg_reviews')):.2f}", f"{(float(last_row.get('avg_reviews')) - float(first_row.get('avg_reviews'))):+.2f}")
+                else:
+                    d3.metric("评论均值变化", "-", None)
+            st.dataframe(trend_df, width="stretch")
+        else:
+            st.info("当前筛选条件下暂无可用时间序列数据（需要 Timestamp 或 observed_at 字段）。")
+
+        st.markdown("**筛选结果明细（前 200 条）**")
+        show_cols = [
+            c
+            for c in [
+                "Timestamp",
+                "observed_at",
+                "Domain",
+                "domain",
+                "Keyword",
+                "keyword",
+                "Product",
+                "product_title",
+                "Price",
+                "Review Count",
+                "Final URL",
+            ]
+            if c in focus_df.columns
+        ]
+        focus_show = focus_df[show_cols].head(200) if show_cols else focus_df.head(200)
+        col_cfg_focus = {}
+        if "Final URL" in focus_show.columns:
+            col_cfg_focus["Final URL"] = st.column_config.LinkColumn("URL", display_text="打开")
+        st.dataframe(focus_show, width="stretch", column_config=col_cfg_focus)
+
     with tab_decoder:
         st.subheader("🧩 投放策略解密 (Ad Strategy Decoder)")
         try:
             selected_domain = st.session_state.get("selected_domain")
             ad_df = load_sqlite_table_as_df(
                 """
-                SELECT observed_at, keyword, gad_campaignid, url, raw_url, domain, brand, ad_type, ad_signals, product_id
+                SELECT observed_at, keyword, gad_campaignid, url, raw_url, domain, brand, ad_type, ad_signals, product_id, batch_id
                 FROM ad_impressions
                 WHERE url IS NOT NULL AND url != ''
                 """
@@ -1991,7 +2361,34 @@ if page == "📊 总览" and st.session_state.current_df is not None:
             if ad_df is None or ad_df.empty:
                 st.info("SQLite 中暂无 ad_impressions 数据。请先抓取一轮广告。")
             else:
-                x = ad_df.merge(prod_df, on="product_id", how="left")
+                scoped_ad_df = ad_df.copy()
+                scope_note = "当前视图"
+                # 优先按当前数据里的 Batch ID 限定，避免混入历史库旧数据
+                if "Batch ID" in df.columns:
+                    batch_ids = [b for b in df["Batch ID"].astype(str).dropna().unique().tolist() if str(b).strip()]
+                    if batch_ids and "batch_id" in scoped_ad_df.columns:
+                        scoped_ad_df = scoped_ad_df[scoped_ad_df["batch_id"].astype(str).isin(batch_ids)]
+
+                # 若没有 Batch ID 或过滤后为空，按当前数据日期限定
+                if scoped_ad_df.empty and "Timestamp" in df.columns:
+                    dates = sorted(
+                        pd.to_datetime(df["Timestamp"], errors="coerce").dropna().dt.strftime("%Y-%m-%d").unique().tolist()
+                    )
+                    if dates:
+                        mask = pd.Series([False] * len(ad_df), index=ad_df.index)
+                        obs = ad_df["observed_at"].astype(str)
+                        for d in dates:
+                            mask = mask | obs.str.startswith(d)
+                        scoped_ad_df = ad_df[mask]
+
+                # 仍为空则回退全库（并提示）
+                if scoped_ad_df.empty:
+                    scoped_ad_df = ad_df.copy()
+                    scope_note = "全库回退"
+
+                st.caption(f"解密分析数据范围：{scope_note}，记录数 {len(scoped_ad_df)}")
+
+                x = scoped_ad_df.merge(prod_df, on="product_id", how="left")
                 if selected_domain:
                     x = x[x["domain"] == selected_domain]
                 x["observed_at"] = pd.to_datetime(x["observed_at"], errors="coerce")
