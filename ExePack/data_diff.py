@@ -55,13 +55,23 @@ def batch_diff(prev_df: Optional[pd.DataFrame], curr_df: pd.DataFrame) -> Dict[s
     - 输出结构化 diff_items（new/removed/modified）
     - 计算价格变化幅度与语义状态
     """
+    def _ensure_sku_column(df: pd.DataFrame) -> pd.DataFrame:
+        out = df.copy()
+        if "sku_id" in out.columns:
+            return out
+        if "Final URL" in out.columns:
+            source = out["Final URL"].astype(str)
+        elif "URL" in out.columns:
+            source = out["URL"].astype(str)
+        else:
+            source = pd.Series([""] * len(out), index=out.index, dtype="object")
+        out["sku_id"] = source.apply(sku_fingerprint)
+        return out
+
     # 确保 sku_id 列存在
-    if "sku_id" not in curr_df.columns:
-        curr_df = curr_df.copy()
-        curr_df["sku_id"] = curr_df.get("Final URL", curr_df.get("URL", "")).apply(sku_fingerprint)
-    if prev_df is not None and "sku_id" not in prev_df.columns:
-        prev_df = prev_df.copy()
-        prev_df["sku_id"] = prev_df.get("Final URL", prev_df.get("URL", "")).apply(sku_fingerprint)
+    curr_df = _ensure_sku_column(curr_df)
+    if prev_df is not None:
+        prev_df = _ensure_sku_column(prev_df)
 
     prev_map = {row["sku_id"]: row for _, row in (prev_df.iterrows() if prev_df is not None else [])}
     curr_map = {row["sku_id"]: row for _, row in curr_df.iterrows()}
