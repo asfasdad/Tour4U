@@ -761,6 +761,47 @@ def _infer_campaign_and_batch_from_filename(filename: str) -> tuple[str, str]:
     return campaign, batch_id
 
 
+def _select_prev_history_filename(current_filename: str, available_files: list[str]) -> str | None:
+    """为当前历史文件选择一个“上一轮”文件名，用于 Batch Diff。"""
+    if not current_filename or not available_files:
+        return None
+
+    def _parse_ts_and_campaign(name: str) -> tuple[str | None, str]:
+        base = (name or "").replace(".csv", "")
+        parts = base.split("_")
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+            ts = f"{parts[0]}_{parts[1]}"
+            camp = parts[2] if len(parts) >= 3 else ""
+            return ts, camp
+        return None, ""
+
+    cur_ts, cur_campaign = _parse_ts_and_campaign(current_filename)
+    candidates = [f for f in available_files if f and f != current_filename]
+    if not candidates:
+        return None
+
+    parsed = []
+    for f in candidates:
+        ts, camp = _parse_ts_and_campaign(f)
+        if ts:
+            parsed.append((f, ts, camp))
+
+    if cur_ts:
+        if cur_campaign:
+            same_campaign = [(f, ts) for (f, ts, camp) in parsed if camp == cur_campaign and ts < cur_ts]
+            if same_campaign:
+                same_campaign.sort(key=lambda x: x[1], reverse=True)
+                return same_campaign[0][0]
+
+        earlier = [(f, ts) for (f, ts, _camp) in parsed if ts < cur_ts]
+        if earlier:
+            earlier.sort(key=lambda x: x[1], reverse=True)
+            return earlier[0][0]
+
+    parsed.sort(key=lambda x: x[1], reverse=True)
+    return parsed[0][0] if parsed else None
+
+
 def enrich_dataframe_for_ui(df: pd.DataFrame, history_filename: str = "") -> pd.DataFrame:
     """对旧历史数据做字段补全，确保新 UI（Domain->Campaign）能渲染。"""
     if df is None or df.empty:
@@ -768,21 +809,36 @@ def enrich_dataframe_for_ui(df: pd.DataFrame, history_filename: str = "") -> pd.
     df = df.copy()
 
     inferred_campaign, inferred_batch_id = _infer_campaign_and_batch_from_filename(history_filename)
+
+    def _fill_blank_with(series: pd.Series, fallback: str) -> pd.Series:
+        if fallback is None:
+            fallback = ""
+        as_str = series.fillna("").astype(str)
+        return as_str.where(as_str.str.strip() != "", fallback)
+
     if "Campaign" not in df.columns:
         df["Campaign"] = inferred_campaign
     else:
-        df["Campaign"] = df["Campaign"].fillna("")
+        df["Campaign"] = _fill_blank_with(df["Campaign"], inferred_campaign)
     if "Batch ID" not in df.columns:
         df["Batch ID"] = inferred_batch_id
     else:
-        df["Batch ID"] = df["Batch ID"].fillna("")
-    if "Campaign ID" not in df.columns:
-        if "Final URL" in df.columns:
-            df["Campaign ID"] = df["Final URL"].astype(str).apply(_extract_campaign_id_from_url)
-        else:
-            df["Campaign ID"] = ""
+        df["Batch ID"] = _fill_blank_with(df["Batch ID"], inferred_batch_id)
+
+    if "Final URL" in df.columns:
+        inferred_campaign_id = df["Final URL"].astype(str).apply(_extract_campaign_id_from_url)
     else:
-        df["Campaign ID"] = df["Campaign ID"].fillna("")
+        inferred_campaign_id = ""
+
+    if "Campaign ID" not in df.columns:
+        df["Campaign ID"] = inferred_campaign_id
+    else:
+        if "Final URL" in df.columns:
+            as_str = df["Campaign ID"].fillna("").astype(str)
+            inferred_str = inferred_campaign_id.astype(str)
+            df["Campaign ID"] = as_str.where(as_str.str.strip() != "", inferred_str)
+        else:
+            df["Campaign ID"] = df["Campaign ID"].fillna("")
 
     if "Final URL" in df.columns and "sku_id" not in df.columns:
         df["sku_id"] = df["Final URL"].astype(str).apply(sku_fingerprint)
@@ -795,16 +851,31 @@ def enrich_dataframe_for_ui(df: pd.DataFrame, history_filename: str = "") -> pd.
             return (core[:1].upper() + core[1:]) if core else ""
         if "Brand" not in df.columns:
             df["Brand"] = df["Domain"].astype(str).apply(_brand_from_domain)
+        else:
+            inferred_brand = df["Domain"].astype(str).apply(_brand_from_domain)
+            as_str = df["Brand"].fillna("").astype(str)
+            df["Brand"] = as_str.where(as_str.str.strip() != "", inferred_brand)
 
     if "Final URL" in df.columns and "Page Type" not in df.columns:
         def _page_type(url: str) -> str:
             u = (url or "").lower()
-            if any(x in u for x in ["/product/", "/item/", "/p/"]):
+            if any(x in u for x in ["/product/", "/products/", "/item/", "/p/"]):
                 return "Product Page (详情页)"
-            if any(x in u for x in ["/collection/", "/category/"]):
+            if any(x in u for x in ["/collection/", "/collections/", "/category/"]):
                 return "Collection (列表页)"
             return "Other/Home"
         df["Page Type"] = df["Final URL"].astype(str).apply(_page_type)
+    elif "Final URL" in df.columns and "Page Type" in df.columns:
+        def _page_type(url: str) -> str:
+            u = (url or "").lower()
+            if any(x in u for x in ["/product/", "/products/", "/item/", "/p/"]):
+                return "Product Page (详情页)"
+            if any(x in u for x in ["/collection/", "/collections/", "/category/"]):
+                return "Collection (列表页)"
+            return "Other/Home"
+        inferred_page_type = df["Final URL"].astype(str).apply(_page_type)
+        as_str = df["Page Type"].fillna("").astype(str)
+        df["Page Type"] = as_str.where(as_str.str.strip() != "", inferred_page_type)
 
     # 兼容旧记录：确保关键列存在
     if "parse_strategy" not in df.columns:
@@ -920,13 +991,24 @@ if "prev_snapshot_df" not in st.session_state:
     st.session_state.prev_snapshot_df = None
 # LLM 配置（由侧边栏写入，主区读取）
 if "llm_platform" not in st.session_state:
-    st.session_state.llm_platform = "DeepSeek"
+    st.session_state.llm_platform = "OpenAI"
 if "llm_model" not in st.session_state:
-    st.session_state.llm_model = "deepseek-chat"
+    st.session_state.llm_model = "gpt-5.3-codex"
 if "llm_api_key" not in st.session_state:
     st.session_state.llm_api_key = ""
 if "llm_base_url" not in st.session_state:
-    st.session_state.llm_base_url = "https://api.deepseek.com"
+    st.session_state.llm_base_url = "https://api.openai.com/v1"
+if "sb_platform" not in st.session_state:
+    st.session_state.sb_platform = "OpenAI"
+if "sb_model" not in st.session_state:
+    st.session_state.sb_model = "gpt-5.3-codex"
+if "default_model_bootstrapped" not in st.session_state:
+    st.session_state.default_model_bootstrapped = True
+    st.session_state.sb_platform = "OpenAI"
+    st.session_state.sb_model = "gpt-5.3-codex"
+    st.session_state.llm_platform = "OpenAI"
+    st.session_state.llm_model = "gpt-5.3-codex"
+    st.session_state.llm_base_url = "https://api.openai.com/v1"
 # 任务状态机：爬虫运行中 / 暂停
 if "is_running" not in st.session_state:
     st.session_state.is_running = True
@@ -956,6 +1038,9 @@ if (
                 loaded_df = enrich_dataframe_for_ui(loaded_df, selected_file)
                 st.session_state.current_df = loaded_df
                 st.session_state.current_history_key = selected_file
+                prev_file = _select_prev_history_filename(selected_file, files)
+                prev_loaded_df = load_history_file(prev_file) if prev_file else None
+                st.session_state.prev_run_df = enrich_dataframe_for_ui(prev_loaded_df, prev_file) if prev_loaded_df is not None else None
                 st.session_state._sidebar_selected_file = selected_file  # 同步侧边栏显示
                 st.session_state.ai_report_content = ""
                 session = get_session_for_file(selected_file)
@@ -1063,6 +1148,9 @@ with st.sidebar:
                     loaded_df = enrich_dataframe_for_ui(loaded_df, selected_file)
                     st.session_state.current_df = loaded_df
                     st.session_state.current_history_key = selected_file
+                    prev_file = _select_prev_history_filename(selected_file, files)
+                    prev_loaded_df = load_history_file(prev_file) if prev_file else None
+                    st.session_state.prev_run_df = enrich_dataframe_for_ui(prev_loaded_df, prev_file) if prev_loaded_df is not None else None
                     st.session_state._sidebar_selected_file = selected_file  # 同步侧边栏显示
                     st.session_state.ai_report_content = ""
                     # 加载该历史记录对应的多轮会话
@@ -1146,8 +1234,19 @@ with st.sidebar:
         st.divider()
 
     with st.expander("🤖 AI 指挥中心 (点击展开/收起)", expanded=True):
-        platform = st.selectbox("Select Platform", list(PLATFORM_MODELS.keys()), key="sb_platform")
+        platform_options = list(PLATFORM_MODELS.keys())
+        if st.session_state.get("sb_platform") not in platform_options:
+            st.session_state.sb_platform = "OpenAI"
+
+        platform = st.selectbox("Select Platform", platform_options, key="sb_platform")
         models = PLATFORM_MODELS.get(platform, [])
+
+        if st.session_state.get("sb_model") not in models:
+            if platform == "OpenAI" and "gpt-5.3-codex" in models:
+                st.session_state.sb_model = "gpt-5.3-codex"
+            elif models:
+                st.session_state.sb_model = models[0]
+
         model_name = st.selectbox("Select Model", models, key="sb_model")
         api_key = st.text_input("API Key", type="password", value=os.environ.get("OPENAI_API_KEY", ""), key="sb_apikey")
         # Base URL 使用常量，不展示在 UI
@@ -1200,32 +1299,32 @@ with st.sidebar:
             elif not api_key and platform != "Ollama":
                 st.error("请填写 API Key！")
             else:
-                def _generate_report():
-                    try:
-                        st.session_state.report_generating = True
-                        df = st.session_state.current_df
-                        provider = get_provider(st.session_state.llm_platform, st.session_state.llm_model, st.session_state.llm_api_key, st.session_state.llm_base_url)
-                        if not provider:
-                            return
+                if "report_error" in st.session_state:
+                    del st.session_state.report_error
+                try:
+                    st.session_state.report_generating = True
+                    df = st.session_state.current_df
+                    provider = get_provider(st.session_state.llm_platform, st.session_state.llm_model, st.session_state.llm_api_key, st.session_state.llm_base_url)
+                    if provider:
                         summary = df["Product"].value_counts().head(10).to_string()
                         cols = [c for c in ["Keyword", "Product", "Domain", "Type"] if c in df.columns]
                         data_sample = df[cols].head(40).to_csv(index=False) if cols else ""
-                        full_prompt = f"{global_ai_rule}\n\n【数据统计摘要】:\n{summary}\n\n【详细数据样本 (前40条)】:\n{data_sample}"
-                        content = provider.chat([{"role": "user", "content": full_prompt}], stream=False)
-                        st.session_state.ai_report_content = content
+                        full_prompt = chr(10).join([global_ai_rule, "", "[Summary]", summary, "", "[Data Sample Top40]", data_sample])
+                        content_placeholder = st.empty()
+                        full_response = ""
+                        stream_result = provider.chat([{"role": "user", "content": full_prompt}], stream=True)
+                        for chunk in stream_result:
+                            full_response += chunk
+                            content_placeholder.markdown(full_response + "▌")
+                        content_placeholder.markdown(full_response)
+
+                        st.session_state.ai_report_content = full_response
                         snap = make_snapshot(df, "生成报告时")
                         st.session_state.current_session.setdefault("data_snapshots", []).append(snap)
-                    except Exception as e:
-                        st.session_state.report_error = str(e)
-                    finally:
-                        st.session_state.report_generating = False
-
-                if "report_error" in st.session_state:
-                    del st.session_state.report_error
-                th = threading.Thread(target=_generate_report, daemon=True)
-                th.start()
-                st.toast("🚀 深度报告生成中... 可继续操作其他 Tab，完成后请刷新或切换至 [深度报告] 查看。")
-                st.rerun()
+                except Exception as e:
+                    st.session_state.report_error = str(e)
+                finally:
+                    st.session_state.report_generating = False
 
 # --- 抓取逻辑（保留 V1）---
 def get_product_name(url):
@@ -1360,9 +1459,9 @@ def consumer_worker(link_queue, shared_list, lock, counters, is_running, setting
 
     def _page_type(url: str) -> str:
         u = (url or "").lower()
-        if any(x in u for x in ["/product/", "/item/", "/p/"]):
+        if any(x in u for x in ["/product/", "/products/", "/item/", "/p/"]):
             return "Product Page (详情页)"
-        if any(x in u for x in ["/collection/", "/category/"]):
+        if any(x in u for x in ["/collection/", "/collections/", "/category/"]):
             return "Collection (列表页)"
         return "Other/Home"
 
