@@ -123,6 +123,29 @@ def rename_session_file_key(old_history_filename: str, new_history_filename: str
     return True
 
 
+def delete_session_file_key(history_filename: str) -> bool:
+    """历史文件删除后，同步删除 sessions.json 的键与反向索引。"""
+    if not history_filename:
+        return False
+
+    data = _load_sessions_raw()
+    by_file = data.get("by_file", {})
+    by_id = data.get("by_id", {})
+
+    item = by_file.pop(history_filename, None)
+    if item is None:
+        return False
+
+    session_id = item.get("id")
+    if session_id and by_id.get(session_id) == history_filename:
+        by_id.pop(session_id, None)
+
+    data["by_file"] = by_file
+    data["by_id"] = by_id
+    _save_sessions_raw(data)
+    return True
+
+
 def list_history_files_with_sessions() -> List[str]:
     """返回所有 CSV 历史文件列表（与 sessions 可能部分对应）"""
     _ensure_dir()

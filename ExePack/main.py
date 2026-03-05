@@ -18,7 +18,7 @@ import threading
 import queue
 import csv
 import io
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import re
 import sqlite3
@@ -35,6 +35,7 @@ from session_store import (
     save_session_for_file,
     list_history_files_with_sessions,
     rename_session_file_key,
+    delete_session_file_key,
 )
 from data_diff import compute_diff, make_snapshot, get_diff_summary_for_ui, sku_fingerprint, infer_price_from_text
 
@@ -98,6 +99,70 @@ def _extract_campaign_id_from_url(url: str) -> str:
 
 def _extract_adgroup_id_from_url(url: str) -> str:
     return _get_query_param(url, ["adgroupid", "adgroup_id", "adset_id", "adsetid"])
+
+
+def _normalize_url_for_dedup(url: str) -> str:
+    try:
+        if pd.isna(url):
+            return ""
+    except Exception:
+        pass
+    raw = str(url or "").strip()
+    if raw.lower() == "nan":
+        return ""
+    if not raw:
+        return ""
+    try:
+        from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+        split = urlsplit(raw)
+        query = urlencode(sorted(parse_qsl(split.query, keep_blank_values=True)))
+        path = (split.path or "").rstrip("/")
+        return urlunsplit((split.scheme.lower(), split.netloc.lower(), path, query, ""))
+    except Exception:
+        return raw.lower()
+
+
+def _ad_row_unique_key(final_url: Any, campaign_id: Any) -> str:
+    normalized_url = _normalize_url_for_dedup(final_url)
+    if normalized_url:
+        return f"url:{normalized_url}"
+    try:
+        if pd.isna(campaign_id):
+            campaign_id = ""
+    except Exception:
+        pass
+    cid = str(campaign_id or "").strip().lower()
+    if cid == "nan":
+        cid = ""
+    if cid:
+        return f"cid:{cid}"
+    return ""
+
+
+def _collect_existing_row_keys(csv_path: str) -> set[str]:
+    keys: set[str] = set()
+    if not csv_path or not os.path.exists(csv_path):
+        return keys
+
+    df = None
+    for encoding in ("utf-8-sig", "utf-8", "gbk"):
+        try:
+            df = pd.read_csv(csv_path, encoding=encoding)
+            break
+        except Exception:
+            df = None
+
+    if df is None or df.empty:
+        return keys
+
+    for _, row in df.iterrows():
+        url = row.get("Final URL", "")
+        campaign_id = row.get("Campaign ID", "")
+        key = _ad_row_unique_key(url, campaign_id)
+        if key:
+            keys.add(key)
+    return keys
 
 
 def _parse_blocked_domains(text: str) -> list[str]:
@@ -342,24 +407,12 @@ def _engine_thread_run(k_list: list[str], settings: dict, current_save_path: str
             stop_now = False
             with ENGINE_LOCK:
                 if ENGINE_STATE.get("stop_requested"):
-                    is_running_ref[0] = False
                     stop_now = True
             if stop_now:
-                # 立即清空队列，避免卡在大量 pending
-                try:
-                    while True:
-                        link_queue.get_nowait()
-                except Exception:
-                    pass
-                for _ in range(int(settings.get("num_workers", 2))):
-                    try:
-                        link_queue.put_nowait(None)
-                    except Exception:
-                        pass
-                # 等待一小段时间让消费者退出
+                # 优雅停止：不丢弃队列中已发现数据，等待消费者把已入队任务处理完
                 for t in workers:
                     try:
-                        t.join(timeout=3)
+                        t.join(timeout=20)
                     except Exception:
                         pass
                 break
@@ -758,10 +811,28 @@ def db_insert_ad_impression(
     product_id: str,
     batch_id: str,
     campaign: str,
-) -> None:
+) -> bool:
     with DB_LOCK:
         conn = _db_connect()
         try:
+            row_exists = conn.execute(
+                """
+                SELECT 1
+                FROM ad_impressions
+                WHERE (url = ? AND ? != '')
+                   OR (? != '' AND gad_campaignid = ? AND domain = ?)
+                LIMIT 1
+                """,
+                (
+                    url,
+                    url,
+                    gad_campaignid,
+                    gad_campaignid,
+                    domain,
+                ),
+            ).fetchone()
+            if row_exists:
+                return False
             conn.execute(
                 """
                 INSERT INTO ad_impressions (
@@ -784,6 +855,7 @@ def db_insert_ad_impression(
                 ),
             )
             conn.commit()
+            return True
         finally:
             conn.close()
 
@@ -841,6 +913,20 @@ def rename_history_file(old_name: str, new_name: str) -> bool:
     return False
 
 
+def delete_history_file(name: str) -> bool:
+    if not name:
+        return False
+    path = os.path.join(HISTORY_DIR, name)
+    if not os.path.exists(path):
+        return False
+    try:
+        os.remove(path)
+    except Exception:
+        return False
+    delete_session_file_key(name)
+    return True
+
+
 def _infer_campaign_and_batch_from_filename(filename: str) -> tuple[str, str]:
     """从历史文件名推断 batch_id 与 campaign 名（用于兼容旧历史）"""
     base = (filename or "").replace(".csv", "")
@@ -894,6 +980,25 @@ def _select_prev_history_filename(current_filename: str, available_files: list[s
 
     parsed.sort(key=lambda x: x[1], reverse=True)
     return parsed[0][0] if parsed else None
+
+
+def _load_snapshot_meta_as_snapshots(session: dict[str, Any]) -> list[dict[str, Any]]:
+    """Hydrate persisted snapshot metadata into in-memory snapshot entries."""
+    raw = session.get("data_snapshots_meta", []) if isinstance(session, dict) else []
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        out.append(
+            {
+                "timestamp": item.get("timestamp"),
+                "row_count": item.get("row_count"),
+                "description": item.get("description", ""),
+            }
+        )
+    return out
 
 
 def enrich_dataframe_for_ui(df: pd.DataFrame, history_filename: str = "") -> pd.DataFrame:
@@ -1207,6 +1312,242 @@ def compute_adgroup_changes(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def build_adgroup_change_rebuild_data(
+    df: pd.DataFrame,
+    mode: str = "产品",
+    domain: str = "",
+    product: str = "",
+    start_date: Any = None,
+    end_date: Any = None,
+) -> dict[str, pd.DataFrame]:
+    """Req-006: 构建广告组变化的概览与可下钻明细。"""
+    empty_summary = pd.DataFrame(columns=["date", "entity", "adgroup_count", "new_count", "removed_count", "net_change"])
+    empty_details = pd.DataFrame(
+        columns=["date", "change_type", "entity", "site", "adgroup_id", "product_name", "Final URL", "Timestamp"]
+    )
+    if df is None or df.empty:
+        return {"summary": empty_summary, "details": empty_details, "trend": empty_summary.copy()}
+
+    out = df.copy()
+    if "Domain" not in out.columns:
+        if "domain" in out.columns:
+            out["Domain"] = out["domain"].astype(str)
+        elif "Final URL" in out.columns:
+            out["Domain"] = out["Final URL"].astype(str).apply(lambda u: urlparse(u).netloc)
+        else:
+            out["Domain"] = ""
+    if "product_name" not in out.columns:
+        if "Product" in out.columns:
+            out["product_name"] = out["Product"].astype(str)
+        else:
+            out["product_name"] = ""
+    if "adgroup_id" not in out.columns:
+        if "广告组ID" in out.columns:
+            out["adgroup_id"] = out["广告组ID"].astype(str)
+        elif "gad_campaignid" in out.columns:
+            out["adgroup_id"] = out["gad_campaignid"].astype(str)
+        else:
+            out["adgroup_id"] = ""
+
+    ts_col = "Timestamp" if "Timestamp" in out.columns else ("observed_at" if "observed_at" in out.columns else None)
+    if not ts_col:
+        return {"summary": empty_summary, "details": empty_details, "trend": empty_summary.copy()}
+    out["__dt"] = pd.to_datetime(out[ts_col], errors="coerce")
+    out = out[out["__dt"].notna()].copy()
+    if out.empty:
+        return {"summary": empty_summary, "details": empty_details, "trend": empty_summary.copy()}
+
+    out["date"] = out["__dt"].dt.date
+    if start_date is not None:
+        out = out[out["date"] >= pd.to_datetime(start_date).date()]
+    if end_date is not None:
+        out = out[out["date"] <= pd.to_datetime(end_date).date()]
+    if domain:
+        out = out[out["Domain"].astype(str) == str(domain)]
+    if product:
+        out = out[out["product_name"].astype(str) == str(product)]
+    out["adgroup_id"] = out["adgroup_id"].astype(str).str.strip()
+    out = out[out["adgroup_id"] != ""]
+    if out.empty:
+        return {"summary": empty_summary, "details": empty_details, "trend": empty_summary.copy()}
+
+    entity_col = "product_name" if mode == "产品" else "Domain"
+    summary_rows: list[dict[str, Any]] = []
+    detail_rows: list[dict[str, Any]] = []
+
+    for entity, g in out.groupby(entity_col, dropna=False):
+        g2 = g.sort_values("__dt")
+        prev_set: set[str] = set()
+        for d in sorted(g2["date"].unique()):
+            day_df = g2[g2["date"] == d]
+            cur_set = set(day_df["adgroup_id"].astype(str).tolist())
+            added = cur_set - prev_set
+            removed = prev_set - cur_set
+            summary_rows.append(
+                {
+                    "date": d,
+                    "entity": str(entity),
+                    "adgroup_count": len(cur_set),
+                    "new_count": len(added),
+                    "removed_count": len(removed),
+                    "net_change": len(added) - len(removed),
+                }
+            )
+
+            for ag in sorted(added):
+                sample = day_df[day_df["adgroup_id"] == ag].head(1)
+                detail_rows.append(
+                    {
+                        "date": d,
+                        "change_type": "新增",
+                        "entity": str(entity),
+                        "site": str(sample["Domain"].iloc[0]) if not sample.empty else "",
+                        "adgroup_id": ag,
+                        "product_name": str(sample["product_name"].iloc[0]) if not sample.empty else "",
+                        "Final URL": str(sample["Final URL"].iloc[0]) if (not sample.empty and "Final URL" in sample.columns) else "",
+                        "Timestamp": str(sample[ts_col].iloc[0]) if not sample.empty else "",
+                    }
+                )
+            for ag in sorted(removed):
+                detail_rows.append(
+                    {
+                        "date": d,
+                        "change_type": "移除",
+                        "entity": str(entity),
+                        "site": "",
+                        "adgroup_id": ag,
+                        "product_name": "",
+                        "Final URL": "",
+                        "Timestamp": "",
+                    }
+                )
+            prev_set = cur_set
+
+    summary_df = pd.DataFrame(summary_rows) if summary_rows else empty_summary
+    details_df = pd.DataFrame(detail_rows) if detail_rows else empty_details
+    trend_df = (
+        summary_df.groupby("date", as_index=False)
+        .agg(
+            adgroup_count=("adgroup_count", "sum"),
+            new_count=("new_count", "sum"),
+            removed_count=("removed_count", "sum"),
+            net_change=("net_change", "sum"),
+        )
+        .sort_values("date")
+        if not summary_df.empty
+        else empty_summary.copy()
+    )
+    return {"summary": summary_df, "details": details_df, "trend": trend_df}
+
+
+def get_keyword_insight_filter_options(df: pd.DataFrame, keyword: str = "") -> dict[str, list[str]]:
+    """Req-007: 关键词驱动联动筛选项。"""
+    if df is None or df.empty:
+        return {"keywords": [], "domains": [], "products": []}
+    out = df.copy()
+    if "Domain" not in out.columns:
+        if "domain" in out.columns:
+            out["Domain"] = out["domain"].astype(str)
+        elif "Final URL" in out.columns:
+            out["Domain"] = out["Final URL"].astype(str).apply(lambda u: urlparse(u).netloc)
+        else:
+            out["Domain"] = ""
+    keyword_col = "Keyword" if "Keyword" in out.columns else ("keyword" if "keyword" in out.columns else None)
+    product_col = "Product" if "Product" in out.columns else ("product_title" if "product_title" in out.columns else None)
+    if keyword and keyword_col:
+        out = out[out[keyword_col].astype(str) == str(keyword)]
+
+    keywords = sorted([x for x in (out[keyword_col].astype(str).dropna().unique().tolist() if keyword_col else []) if str(x).strip()])
+    domains = sorted([x for x in out["Domain"].astype(str).dropna().unique().tolist() if str(x).strip()])
+    products = sorted([x for x in (out[product_col].astype(str).dropna().unique().tolist() if product_col else []) if str(x).strip()])
+    return {"keywords": keywords, "domains": domains, "products": products}
+
+
+def build_keyword_insight_data(
+    df: pd.DataFrame,
+    keyword: str,
+    domain: str = "",
+    product: str = "",
+    granularity: str = "小时",
+) -> dict[str, Any]:
+    """Req-007: 关键词洞察数据（趋势 + 去重明细）。"""
+    empty_trend = pd.DataFrame(columns=["time_bucket", "records", "unique_products", "avg_price", "avg_reviews"])
+    empty_details = pd.DataFrame(columns=["Timestamp", "Domain", "Keyword", "Product", "Final URL", "出现次数"])
+    if df is None or df.empty:
+        return {"filtered": pd.DataFrame(), "trend": empty_trend, "details": empty_details, "summary": {"records": 0}}
+
+    out = df.copy()
+    keyword_col = "Keyword" if "Keyword" in out.columns else ("keyword" if "keyword" in out.columns else None)
+    product_col = "Product" if "Product" in out.columns else ("product_title" if "product_title" in out.columns else None)
+    if "Domain" not in out.columns:
+        if "domain" in out.columns:
+            out["Domain"] = out["domain"].astype(str)
+        elif "Final URL" in out.columns:
+            out["Domain"] = out["Final URL"].astype(str).apply(lambda u: urlparse(u).netloc)
+        else:
+            out["Domain"] = ""
+
+    if keyword_col and keyword:
+        out = out[out[keyword_col].astype(str) == str(keyword)]
+    if domain:
+        out = out[out["Domain"].astype(str) == str(domain)]
+    if product and product_col:
+        out = out[out[product_col].astype(str) == str(product)]
+    if out.empty:
+        return {"filtered": out, "trend": empty_trend, "details": empty_details, "summary": {"records": 0}}
+
+    ts_col = "Timestamp" if "Timestamp" in out.columns else ("observed_at" if "observed_at" in out.columns else None)
+    if ts_col:
+        out["__dt"] = pd.to_datetime(out[ts_col], errors="coerce")
+    else:
+        out["__dt"] = pd.NaT
+
+    if granularity == "天":
+        out["time_bucket"] = out["__dt"].dt.strftime("%Y-%m-%d")
+    else:
+        out["time_bucket"] = out["__dt"].dt.strftime("%Y-%m-%d %H:00")
+
+    out["__price"] = pd.to_numeric(out["Price"], errors="coerce") if "Price" in out.columns else pd.NA
+    out["__reviews"] = pd.to_numeric(out["Review Count"], errors="coerce") if "Review Count" in out.columns else pd.NA
+
+    trend = (
+        out.dropna(subset=["time_bucket"])
+        .groupby("time_bucket", as_index=False)
+        .agg(
+            records=("time_bucket", "size"),
+            unique_products=((product_col if product_col else "Domain"), lambda s: s.astype(str).nunique()),
+            avg_price=("__price", "mean"),
+            avg_reviews=("__reviews", "mean"),
+        )
+        .sort_values("time_bucket")
+    )
+
+    if "Final URL" in out.columns:
+        dedup_key = out["Final URL"].astype(str).apply(_normalize_url_for_dedup)
+    else:
+        dedup_key = pd.Series(["" for _ in range(len(out))], index=out.index)
+    if product_col:
+        fallback_key = out[product_col].astype(str).str.lower().str.strip()
+    else:
+        fallback_key = pd.Series(["" for _ in range(len(out))], index=out.index)
+    out["__detail_key"] = dedup_key.where(dedup_key.str.len() > 0, fallback_key)
+    out["出现次数"] = out.groupby("__detail_key")["__detail_key"].transform("size")
+    if ts_col and ts_col in out.columns:
+        detail_df = out.sort_values(ts_col, ascending=False).drop_duplicates(subset=["__detail_key"], keep="first")
+    else:
+        detail_df = out.drop_duplicates(subset=["__detail_key"], keep="first")
+
+    show_cols = [c for c in ["Timestamp", "observed_at", "Domain", keyword_col, product_col, "Final URL", "出现次数"] if c and c in detail_df.columns]
+    details = detail_df[show_cols].copy() if show_cols else detail_df.copy()
+
+    return {
+        "filtered": out.drop(columns=["__dt", "__price", "__reviews", "__detail_key"], errors="ignore"),
+        "trend": trend if trend is not None else empty_trend,
+        "details": details if details is not None else empty_details,
+        "summary": {"records": int(len(out)), "unique_rows": int(len(details)) if details is not None else 0},
+    }
+
+
 # --- 页面配置 ---
 st.set_page_config(page_title="竞品分析 v15 重构版", layout="wide", page_icon="🧠")
 st.title("🚀 竞品分析 (v15 架构重构版)")
@@ -1298,7 +1639,7 @@ if (
                     "messages": session.get("messages", []),
                     "created_at": session.get("created_at"),
                     "updated_at": session.get("updated_at"),
-                    "data_snapshots": [],
+                    "data_snapshots": _load_snapshot_meta_as_snapshots(session),
                 }
     except Exception:
         pass
@@ -1362,9 +1703,28 @@ with st.sidebar:
             created_name = create_empty_history_file(new_file_name)
             if created_name:
                 st.session_state.current_df = pd.DataFrame()
+                st.session_state.prev_run_df = None
+                st.session_state.prev_snapshot_df = None
                 st.session_state.current_history_key = created_name
                 st.session_state._sidebar_selected_file = created_name
+                st.session_state.selected_domain = None
                 st.session_state.ai_report_content = ""
+                st.session_state.engine_should_analyze = False
+                st.session_state.is_running = False
+                st.session_state.report_generating = False
+                if "report_error" in st.session_state:
+                    del st.session_state.report_error
+                with ENGINE_LOCK:
+                    ENGINE_STATE["running"] = False
+                    ENGINE_STATE["stop_requested"] = False
+                    ENGINE_STATE["error"] = None
+                    ENGINE_STATE["done"] = 0
+                    ENGINE_STATE["fail"] = 0
+                    ENGINE_STATE["pending"] = 0
+                    ENGINE_STATE["discovered"] = 0
+                    ENGINE_STATE["save_filename"] = ""
+                    ENGINE_STATE["shared_list"] = []
+                    ENGINE_STATE["transferred"] = False
                 new_session = get_session_for_file(created_name)
                 st.session_state.current_session = {
                     "id": new_session.get("id"),
@@ -1409,7 +1769,7 @@ with st.sidebar:
                         "messages": session.get("messages", []),
                         "created_at": session.get("created_at"),
                         "updated_at": session.get("updated_at"),
-                        "data_snapshots": [],
+                        "data_snapshots": _load_snapshot_meta_as_snapshots(session),
                     }
                     st.success(f"已加载: {selected_file}，可继续多轮对话")
                     st.rerun()
@@ -1433,7 +1793,43 @@ with st.sidebar:
                 else:
                     st.error("重命名失败：源文件不存在或目标文件已存在")
 
-        if col_h3.button("🧾 刷新列表"):
+        if col_h3.button("🗑️ 删除文件"):
+            if selected_file == "-- 请选择 --":
+                st.warning("请先选择要删除的文件")
+            else:
+                st.session_state._pending_delete_file = selected_file
+
+        pending_delete_file = st.session_state.get("_pending_delete_file")
+        if pending_delete_file:
+            st.warning(f"确认删除历史记录：{pending_delete_file}？删除后不可恢复。")
+            d1, d2 = st.columns(2)
+            if d1.button("确认删除", key="confirm_delete_history_btn"):
+                if delete_history_file(pending_delete_file):
+                    if st.session_state.get("current_history_key") == pending_delete_file:
+                        st.session_state.current_history_key = None
+                        st.session_state.current_df = pd.DataFrame()
+                        st.session_state.prev_run_df = None
+                        st.session_state.ai_report_content = ""
+                        st.session_state.current_session = {
+                            "id": None,
+                            "title": "",
+                            "messages": [],
+                            "created_at": None,
+                            "updated_at": None,
+                            "data_snapshots": [],
+                        }
+                    if st.session_state.get("_sidebar_selected_file") == pending_delete_file:
+                        st.session_state._sidebar_selected_file = None
+                    st.success("删除成功")
+                else:
+                    st.error("删除失败：文件不存在或被占用")
+                st.session_state._pending_delete_file = None
+                st.rerun()
+            if d2.button("取消", key="cancel_delete_history_btn"):
+                st.session_state._pending_delete_file = None
+                st.rerun()
+
+        if st.button("🧾 刷新列表", key="refresh_history_list_btn"):
             st.rerun()
 
     with st.expander("📡 新建抓取任务", expanded=True):
@@ -1459,6 +1855,30 @@ with st.sidebar:
         auto_refresh = st.checkbox("自动刷新进度(低频)", value=False)
         refresh_interval = st.select_slider("刷新间隔(秒)", options=[2, 3, 5, 8, 10], value=5, disabled=not auto_refresh)
         start_btn = st.button("🚀 启动强力引擎", type="primary", width="stretch")
+        clear_current_btn = st.button("🗑️ 清空当前列表", key="clear_current_list_btn", width="stretch")
+        if clear_current_btn:
+            current_key = st.session_state.get("current_history_key")
+            if isinstance(current_key, str) and current_key.endswith(".csv"):
+                csv_path = os.path.join(HISTORY_DIR, current_key)
+                if os.path.exists(csv_path):
+                    try:
+                        with open(csv_path, "w", encoding="utf-8-sig", newline=""):
+                            pass
+                    except Exception:
+                        pass
+            st.session_state.current_df = pd.DataFrame()
+            st.session_state.prev_run_df = None
+            st.session_state.ai_report_content = ""
+            st.session_state.engine_should_analyze = False
+            st.session_state.is_running = False
+            with ENGINE_LOCK:
+                ENGINE_STATE["shared_list"] = []
+                ENGINE_STATE["transferred"] = False
+                ENGINE_STATE["pending"] = 0
+                ENGINE_STATE["done"] = 0
+                ENGINE_STATE["fail"] = 0
+            st.success("已清空当前列表，可启动全新任务。")
+            st.rerun()
         if st.button("⏹️ 停止并分析", key="stop_analyze_btn"):
             with ENGINE_LOCK:
                 ENGINE_STATE["stop_requested"] = True
@@ -1573,6 +1993,26 @@ with st.sidebar:
                         st.session_state.ai_report_content = full_response
                         snap = make_snapshot(df, "生成报告时")
                         st.session_state.current_session.setdefault("data_snapshots", []).append(snap)
+                        if st.session_state.get("current_history_key"):
+                            save_session_for_file(
+                                st.session_state.current_history_key,
+                                {
+                                    "id": st.session_state.current_session.get("id"),
+                                    "title": st.session_state.current_session.get("title"),
+                                    "messages": st.session_state.current_session.get("messages", []),
+                                    "created_at": st.session_state.current_session.get("created_at"),
+                                    "updated_at": st.session_state.current_session.get("updated_at"),
+                                    "data_snapshots_meta": [
+                                        {
+                                            "timestamp": s.get("timestamp"),
+                                            "row_count": s.get("row_count"),
+                                            "description": s.get("description", ""),
+                                        }
+                                        for s in st.session_state.current_session.get("data_snapshots", [])
+                                        if isinstance(s, dict)
+                                    ],
+                                },
+                            )
                 except Exception as e:
                     st.session_state.report_error = str(e)
                 finally:
@@ -1797,6 +2237,7 @@ def consumer_worker(link_queue, shared_list, lock, counters, is_running, setting
                 continue
             ad_type = "Shopping (图)" if "shopping" in raw_url else "Search (文)"
             domain = final_domain
+            campaign_id = _extract_campaign_id_from_url(final_url)
 
             # --- 稳定性加固：requests 单例抓取 + 解析不全标记待分析（模块二）---
             parse_strategy = "A"
@@ -1889,7 +2330,7 @@ def consumer_worker(link_queue, shared_list, lock, counters, is_running, setting
 
             row = {
                 "Campaign": settings.get("campaign", ""),
-                "Campaign ID": _extract_campaign_id_from_url(final_url),
+                "Campaign ID": campaign_id,
                 "Batch ID": settings.get("batch_id", ""),
                 "Keyword": keyword,
                 "Product": title,
@@ -1931,7 +2372,7 @@ def consumer_worker(link_queue, shared_list, lock, counters, is_running, setting
                 db_insert_ad_impression(
                     observed_at=observed_at,
                     keyword=keyword,
-                    gad_campaignid=_extract_campaign_id_from_url(final_url),
+                    gad_campaignid=campaign_id,
                     url=final_url,
                     raw_url=raw_url,
                     domain=domain,
@@ -1944,10 +2385,17 @@ def consumer_worker(link_queue, shared_list, lock, counters, is_running, setting
                 )
             except Exception as e:
                 row["error_msg"] = (row.get("error_msg") + " | " if row.get("error_msg") else "") + f"db:{e}"
+            row_key = _ad_row_unique_key(final_url, campaign_id)
             with lock:
+                seen_keys = settings.setdefault("seen_keys", set())
+                if row_key and row_key in seen_keys:
+                    continue
+                if row_key:
+                    seen_keys.add(row_key)
                 shared_list.append(row)
                 counters["done"] += 1
-                append_row_to_csv(save_path, row, write_header=(len(shared_list) == 1))
+                write_header = (not os.path.exists(save_path)) or (os.path.getsize(save_path) == 0)
+                append_row_to_csv(save_path, row, write_header=write_header)
         except queue.Empty:
             continue
         except Exception as e:
@@ -1989,11 +2437,6 @@ if start_btn:
                 if os.path.exists(p):
                     current_save_filename = existing_key
                     current_save_path = p
-                    try:
-                        with open(current_save_path, "w", encoding="utf-8-sig") as _f:
-                            _f.write("")
-                    except Exception:
-                        pass
             if not current_save_filename or not current_save_path:
                 safe_summary = "".join([c for c in k_list[0][:20] if c.isalnum() or c in (" ", "_")]).strip()
                 current_save_filename = f"{task_start}_{safe_summary}.csv"
@@ -2009,6 +2452,7 @@ if start_btn:
                 "num_workers": max_workers,
                 "batch_id": task_start,
                 "force_headless": force_headless,
+                "seen_keys": _collect_existing_row_keys(current_save_path),
             }
 
             th = threading.Thread(
@@ -2054,7 +2498,28 @@ if (
     and len(eng_shared) > 0
     and (st.session_state.get("engine_should_analyze") or st.session_state.get("is_running"))
 ):
-    st.session_state.current_df = pd.DataFrame(list(eng_shared))
+    new_df = pd.DataFrame(list(eng_shared))
+    old_df = st.session_state.current_df if isinstance(st.session_state.current_df, pd.DataFrame) else None
+    if old_df is not None and not old_df.empty:
+        merged_df = pd.concat([old_df, new_df], ignore_index=True)
+    else:
+        merged_df = new_df
+    if not merged_df.empty:
+        if "Final URL" in merged_df.columns:
+            norm_url = merged_df["Final URL"].astype(str).apply(_normalize_url_for_dedup)
+        else:
+            norm_url = pd.Series(["" for _ in range(len(merged_df))], index=merged_df.index)
+        if "Campaign ID" in merged_df.columns:
+            cid = merged_df["Campaign ID"].astype(str).str.lower().str.strip()
+        else:
+            cid = pd.Series(["" for _ in range(len(merged_df))], index=merged_df.index)
+        dedup_key = norm_url.where(norm_url.str.len() > 0, cid)
+        merged_df["__dedup_key"] = dedup_key
+        has_key = merged_df["__dedup_key"].astype(str).str.len() > 0
+        merged_df_with_key = merged_df[has_key].drop_duplicates(subset=["__dedup_key"], keep="last")
+        merged_df_without_key = merged_df[~has_key]
+        merged_df = pd.concat([merged_df_with_key, merged_df_without_key], ignore_index=True).drop(columns=["__dedup_key"], errors="ignore")
+    st.session_state.current_df = merged_df
     st.session_state.current_history_key = eng_save
     st.session_state.current_session = {"id": None, "title": "", "messages": [], "created_at": None, "updated_at": None, "data_snapshots": []}
     st.session_state.is_running = False
@@ -2077,9 +2542,12 @@ if page == "📊 总览" and st.session_state.current_df is not None:
     if "广告组ID" not in df.columns and "Domain" in df.columns:
         df["广告组ID"] = df["Domain"]
 
+    adgroup_df_parsed, adgroup_df_dedup = adparser_enrich_and_dedup(df)
+    export_df = adgroup_df_dedup if isinstance(adgroup_df_dedup, pd.DataFrame) and not adgroup_df_dedup.empty else df
+
     st.divider()
     st.header(f"📈 数据分析工作台 (共 {len(df)} 条)")
-    csv_bytes = df.to_csv(index=False).encode("utf-8")
+    csv_bytes = export_df.to_csv(index=False).encode("utf-8")
     st.download_button("📥 下载当前数据 CSV", csv_bytes, "analysis_data.csv", "text/csv", key="dl_csv_main")
 
     tab_report, tab_ai, tab_adgroup, tab_focus, tab_decoder, tab_diff = st.tabs([
@@ -2163,11 +2631,12 @@ if page == "📊 总览" and st.session_state.current_df is not None:
                         st.error(f"对话服务出错: {e}")
 
     with tab_adgroup:
-        df_parsed, df_dedup = adparser_enrich_and_dedup(df)
+        df_parsed, df_dedup = adgroup_df_parsed, adgroup_df_dedup
 
         t_raw, t_tree, t_change = st.tabs(["视图 1：原始数据表", "视图 2：广告活动架构（树状图）", "视图 3：广告组变化"])
 
         with t_raw:
+            raw_source = df_dedup if isinstance(df_dedup, pd.DataFrame) else df_parsed
             show_cols = [
                 c
                 for c in [
@@ -2183,9 +2652,9 @@ if page == "📊 总览" and st.session_state.current_df is not None:
                     "http_status",
                     "error_msg",
                 ]
-                if c in df_parsed.columns
+                if c in raw_source.columns
             ]
-            raw_df_show = df_parsed[show_cols].copy() if show_cols else df_parsed
+            raw_df_show = raw_source[show_cols].copy() if show_cols else raw_source
             col_cfg = {}
             if "Final URL" in raw_df_show.columns:
                 col_cfg["Final URL"] = st.column_config.LinkColumn("URL", display_text="打开")
@@ -2233,113 +2702,121 @@ if page == "📊 总览" and st.session_state.current_df is not None:
                                         st.dataframe(view_df, width="stretch", column_config=col_cfg2)
 
         with t_change:
-            st.markdown("**广告组变化（按日期）**")
-            domain_opts = sorted([d for d in df_parsed.get("Domain", pd.Series(dtype="object")).astype(str).dropna().unique().tolist() if str(d).strip()]) if isinstance(df_parsed, pd.DataFrame) and not df_parsed.empty else []
-            adg_domain_pick = st.selectbox("选择网站（广告组变化）", ["全部"] + domain_opts, index=0, key="adg_domain_pick")
+            st.markdown("**广告组变化（可下钻）**")
             adg_base = df_parsed.copy() if isinstance(df_parsed, pd.DataFrame) else pd.DataFrame()
-            if adg_domain_pick != "全部" and not adg_base.empty and "Domain" in adg_base.columns:
-                adg_base = adg_base[adg_base["Domain"].astype(str) == adg_domain_pick]
-            adg_change_df = compute_adgroup_changes(adg_base)
-            if adg_change_df is None or adg_change_df.empty:
-                st.info("当前筛选下暂无可用广告组时间变化数据（需要 Timestamp + 广告组ID/gad_campaignid）。")
+            if adg_base is None or adg_base.empty:
+                st.info("暂无可用于广告组变化分析的数据。")
             else:
-                adg_chart = adg_change_df.copy()
-                adg_chart["date"] = pd.to_datetime(adg_chart["date"], errors="coerce")
-                adg_chart = adg_chart.dropna(subset=["date"]).set_index("date")
-                cols = [c for c in ["adgroup_count", "new_adgroups", "removed_adgroups", "net_change"] if c in adg_chart.columns]
-                if cols and not adg_chart.empty:
-                    st.line_chart(adg_chart[cols], height=220)
-                st.dataframe(adg_change_df, width="stretch")
+                ts_col_for_range = "Timestamp" if "Timestamp" in adg_base.columns else ("observed_at" if "observed_at" in adg_base.columns else None)
+                ts_series = pd.to_datetime(adg_base[ts_col_for_range], errors="coerce") if ts_col_for_range else pd.Series(dtype="datetime64[ns]")
+                valid_dates = ts_series.dropna().dt.date if ts_col_for_range else pd.Series(dtype="object")
+                min_d = valid_dates.min() if not valid_dates.empty else None
+                max_d = valid_dates.max() if not valid_dates.empty else None
+
+                c1, c2, c3, c4 = st.columns(4)
+                adg_mode = c1.selectbox("分析视角", ["产品", "网站"], index=0, key="adg_mode_pick")
+                domain_opts = sorted([d for d in adg_base.get("Domain", pd.Series(dtype="object")).astype(str).dropna().unique().tolist() if str(d).strip()])
+                adg_domain_pick = c2.selectbox("网站", ["全部"] + domain_opts, index=0, key="adg_domain_pick")
+                product_opts = sorted([p for p in adg_base.get("product_name", pd.Series(dtype="object")).astype(str).dropna().unique().tolist() if str(p).strip()])
+                adg_product_pick = c3.selectbox("产品", ["全部"] + product_opts, index=0, key="adg_product_pick")
+                range_mode = c4.selectbox("时间范围", ["全部", "近7天", "近30天", "自定义"], index=1, key="adg_range_mode")
+
+                start_d = min_d
+                end_d = max_d
+                if min_d and max_d:
+                    if range_mode == "近7天":
+                        start_d = max(max_d - timedelta(days=6), min_d)
+                    elif range_mode == "近30天":
+                        start_d = max(max_d - timedelta(days=29), min_d)
+                    elif range_mode == "自定义":
+                        dr = st.date_input("自定义日期范围", value=(min_d, max_d), key="adg_custom_date")
+                        if isinstance(dr, tuple) and len(dr) == 2:
+                            start_d, end_d = dr
+
+                adg_data = build_adgroup_change_rebuild_data(
+                    adg_base,
+                    mode=adg_mode,
+                    domain="" if adg_domain_pick == "全部" else adg_domain_pick,
+                    product="" if adg_product_pick == "全部" else adg_product_pick,
+                    start_date=start_d,
+                    end_date=end_d,
+                )
+                summary_df = adg_data["summary"]
+                details_df = adg_data["details"]
+                trend_df = adg_data["trend"]
+                if summary_df.empty:
+                    st.info("当前筛选下暂无变化数据。")
+                else:
+                    v1, v2 = st.tabs(["视图A：变化概览", "视图B：趋势图"])
+                    with v1:
+                        st.dataframe(summary_df.sort_values(["date", "entity"], ascending=[False, True]), width="stretch")
+                    with v2:
+                        chart_df = trend_df.copy()
+                        chart_df["date"] = pd.to_datetime(chart_df["date"], errors="coerce")
+                        chart_df = chart_df.dropna(subset=["date"]).set_index("date")
+                        cols = [c for c in ["adgroup_count", "new_count", "removed_count", "net_change"] if c in chart_df.columns]
+                        if cols and not chart_df.empty:
+                            st.line_chart(chart_df[cols], height=240)
+                        st.dataframe(trend_df, width="stretch")
+
+                    st.markdown("**变化明细表（可导出）**")
+                    dshow = details_df.sort_values(["date", "change_type"], ascending=[False, True]) if not details_df.empty else details_df
+                    dcfg = {}
+                    if "Final URL" in dshow.columns:
+                        dcfg["Final URL"] = st.column_config.LinkColumn("URL", display_text="打开")
+                    st.dataframe(dshow, width="stretch", column_config=dcfg)
+                    csv_bytes = dshow.to_csv(index=False).encode("utf-8") if dshow is not None else b""
+                    st.download_button("📥 导出变化明细 CSV", csv_bytes, "adgroup_change_details.csv", "text/csv", key="dl_adgroup_change")
 
     with tab_focus:
-        st.subheader("🎯 单网站 / 单关键词 / 单产品联合分析")
-        opts = get_unified_filter_options(df)
+        st.subheader("🎯 关键词搜索结果洞察")
+        root_opts = get_keyword_insight_filter_options(df)
+        c1, c2, c3, c4 = st.columns(4)
+        keyword_pick = c1.selectbox("关键词（父筛选）", ["全部"] + root_opts["keywords"], index=0, key="focus_keyword_root")
+        child_opts = get_keyword_insight_filter_options(df, "" if keyword_pick == "全部" else keyword_pick)
+        domain_pick = c2.selectbox("网站（联动）", ["全部"] + child_opts["domains"], index=0, key="focus_domain_child")
+        product_pick = c3.selectbox("产品（联动）", ["全部"] + child_opts["products"], index=0, key="focus_product_child")
+        granularity = c4.selectbox("时间粒度", ["小时", "天"], index=0, key="focus_time_granularity")
 
-        col_f1, col_f2, col_f3 = st.columns(3)
-        domain_pick = col_f1.selectbox("网站", ["全部"] + opts["domains"], index=0, key="focus_domain")
-        keyword_pick = col_f2.selectbox("关键词", ["全部"] + opts["keywords"], index=0, key="focus_keyword")
-        product_pick = col_f3.selectbox("产品", ["全部"] + opts["products"], index=0, key="focus_product")
-
-        result = build_unified_analysis_data(
+        result = build_keyword_insight_data(
             df,
-            domain="" if domain_pick == "全部" else domain_pick,
             keyword="" if keyword_pick == "全部" else keyword_pick,
+            domain="" if domain_pick == "全部" else domain_pick,
             product="" if product_pick == "全部" else product_pick,
+            granularity=granularity,
         )
 
         focus_df = result["filtered"]
         trend_df = result["trend"]
+        detail_df = result["details"]
         summary = result["summary"]
 
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("记录数", int(summary.get("records", 0) or 0), None)
-        m2.metric("产品数", int(summary.get("unique_products", 0) or 0), None)
-        avg_price = summary.get("avg_price")
-        avg_reviews = summary.get("avg_reviews")
-        m3.metric("均价", f"{avg_price:.2f}" if avg_price is not None and pd.notna(avg_price) else "-")
-        m4.metric("平均评论", f"{avg_reviews:.2f}" if avg_reviews is not None and pd.notna(avg_reviews) else "-")
-
-        total_n = int(len(focus_df)) if focus_df is not None else 0
-        if total_n > 0:
-            price_cov = float(pd.to_numeric(focus_df["Price"], errors="coerce").notna().mean() * 100.0) if "Price" in focus_df.columns else 0.0
-            review_cov = float(pd.to_numeric(focus_df["Review Count"], errors="coerce").notna().mean() * 100.0) if "Review Count" in focus_df.columns else 0.0
-            st.caption(f"价格识别覆盖率: {price_cov:.1f}% | 评论识别覆盖率: {review_cov:.1f}%")
-            if "Page Type" in focus_df.columns:
-                page_dist = focus_df["Page Type"].astype(str).value_counts(dropna=False)
-                collection_ratio = float(page_dist.get("Collection (列表页)", 0) / max(total_n, 1) * 100.0)
-                if collection_ratio >= 60:
-                    st.info(f"当前筛选中列表页占比 {collection_ratio:.1f}%，列表页通常不稳定提供单品价格/评论，建议切到产品页样本观察。")
-            if price_cov < 20 or review_cov < 20:
-                st.warning("当前站点价格/评论抓取覆盖率较低，常见原因是页面 JS 动态渲染或反爬限制。建议增加采样轮次或切换代理后重试。")
+        m1, m2 = st.columns(2)
+        m1.metric("原始记录数", int(summary.get("records", 0) or 0), None)
+        m2.metric("去重后条数", int(summary.get("unique_rows", 0) or 0), None)
 
         if trend_df is not None and not trend_df.empty:
-            st.markdown("**时间变化趋势（日维度）**")
-            chart_cols = [c for c in ["records", "unique_products", "avg_price", "avg_reviews"] if c in trend_df.columns]
-            chart_df = trend_df.copy()
-            chart_df["date"] = pd.to_datetime(chart_df["date"], errors="coerce")
-            chart_df = chart_df.dropna(subset=["date"]).set_index("date")
-            if chart_cols and not chart_df.empty:
-                st.line_chart(chart_df[chart_cols], height=260)
-
-                first_row = chart_df.iloc[0]
-                last_row = chart_df.iloc[-1]
-                d1, d2, d3 = st.columns(3)
-                d1.metric("记录变化", int(last_row.get("records", 0)), f"{int(last_row.get('records', 0) - first_row.get('records', 0)):+d}")
-                if "avg_price" in chart_df.columns and pd.notna(first_row.get("avg_price")) and pd.notna(last_row.get("avg_price")):
-                    d2.metric("均价变化", f"{float(last_row.get('avg_price')):.2f}", f"{(float(last_row.get('avg_price')) - float(first_row.get('avg_price'))):+.2f}")
-                else:
-                    d2.metric("均价变化", "-", None)
-                if "avg_reviews" in chart_df.columns and pd.notna(first_row.get("avg_reviews")) and pd.notna(last_row.get("avg_reviews")):
-                    d3.metric("评论均值变化", f"{float(last_row.get('avg_reviews')):.2f}", f"{(float(last_row.get('avg_reviews')) - float(first_row.get('avg_reviews'))):+.2f}")
-                else:
-                    d3.metric("评论均值变化", "-", None)
+            st.markdown(f"**时间变化趋势（{granularity}维度）**")
+            chart = trend_df.copy().set_index("time_bucket")
+            cols = [c for c in ["records", "unique_products", "avg_price", "avg_reviews"] if c in chart.columns]
+            if cols:
+                st.line_chart(chart[cols], height=260)
             st.dataframe(trend_df, width="stretch")
         else:
-            st.info("当前筛选条件下暂无可用时间序列数据（需要 Timestamp 或 observed_at 字段）。")
+            st.info("当前筛选条件下暂无可用时间趋势数据。")
 
-        st.markdown("**筛选结果明细（前 200 条）**")
-        show_cols = [
-            c
-            for c in [
-                "Timestamp",
-                "observed_at",
-                "Domain",
-                "domain",
-                "Keyword",
-                "keyword",
-                "Product",
-                "product_title",
-                "Price",
-                "Review Count",
-                "Final URL",
-            ]
-            if c in focus_df.columns
-        ]
-        focus_show = focus_df[show_cols].head(200) if show_cols else focus_df.head(200)
+        st.markdown("**筛选结果明细（去重聚合）**")
         col_cfg_focus = {}
-        if "Final URL" in focus_show.columns:
+        if "Final URL" in detail_df.columns:
             col_cfg_focus["Final URL"] = st.column_config.LinkColumn("URL", display_text="打开")
-        st.dataframe(focus_show, width="stretch", column_config=col_cfg_focus)
+        st.dataframe(detail_df, width="stretch", column_config=col_cfg_focus)
+        st.download_button(
+            "📥 导出关键词洞察明细 CSV",
+            detail_df.to_csv(index=False).encode("utf-8") if detail_df is not None else b"",
+            "keyword_insight_details.csv",
+            "text/csv",
+            key="dl_focus_detail",
+        )
 
     with tab_decoder:
         st.subheader("🧩 投放策略解密 (Ad Strategy Decoder)")
@@ -2462,54 +2939,96 @@ if page == "📊 总览" and st.session_state.current_df is not None:
                     tmp = x.copy()
                     tmp["product_handle"] = tmp["product_handle"].fillna("")
                     tmp["product_title"] = tmp["product_title"].fillna("")
-                    hero = (
-                        tmp[tmp["product_handle"].astype(str).str.len() > 0]
-                        .groupby("product_handle")
-                        .agg(
-                            title=("product_title", "first"),
-                            image_url=("product_image_url", "first"),
-                            ad_frequency=("url", "size"),
-                            keyword_count=("keyword", "nunique"),
-                            campaign_count=("gad_campaignid", "nunique"),
-                            sample_url=("url", "first"),
+                    tmp = tmp[tmp["product_handle"].astype(str).str.len() > 0].copy()
+
+                    valid_obs = pd.to_datetime(tmp["observed_at"], errors="coerce") if "observed_at" in tmp.columns else pd.Series(dtype="datetime64[ns]")
+                    min_obs = valid_obs.dropna().min() if not valid_obs.empty else None
+                    max_obs = valid_obs.dropna().max() if not valid_obs.empty else None
+
+                    ctl1, ctl2, ctl3, ctl4 = st.columns(4)
+                    if min_obs is not None and max_obs is not None:
+                        default_start = max(min_obs.date(), (max_obs - timedelta(days=6)).date())
+                        default_end = max_obs.date()
+                        dr = ctl1.date_input("时间范围", value=(default_start, default_end), key="hero_date_range")
+                        if isinstance(dr, tuple) and len(dr) == 2:
+                            start_dt = pd.to_datetime(dr[0])
+                            end_dt = pd.to_datetime(dr[1]) + pd.Timedelta(days=1)
+                            tmp = tmp[(tmp["observed_at"] >= start_dt) & (tmp["observed_at"] < end_dt)]
+                    show_all = ctl2.checkbox("Show All", value=False, key="hero_show_all")
+                    sort_by = ctl3.selectbox("排序字段", ["ad_frequency", "keyword_count", "campaign_count", "last_seen"], index=0, key="hero_sort_by")
+                    page_size = int(ctl4.selectbox("每页条数", [10, 20, 50, 100], index=2, key="hero_page_size"))
+
+                    if tmp.empty:
+                        st.info("当前筛选下暂无 Hero Product 数据。")
+                    else:
+                        hero = (
+                            tmp.groupby("product_handle")
+                            .agg(
+                                title=("product_title", "first"),
+                                image_url=("product_image_url", "first"),
+                                ad_frequency=("url", "size"),
+                                keyword_count=("keyword", "nunique"),
+                                campaign_count=("gad_campaignid", "nunique"),
+                                sample_url=("url", "first"),
+                                last_seen=("observed_at", "max"),
+                            )
+                            .reset_index()
+                            .sort_values([sort_by, "ad_frequency", "keyword_count"], ascending=False)
                         )
-                        .reset_index()
-                        .sort_values(["ad_frequency", "keyword_count"], ascending=False)
-                        .head(10)
-                    )
 
-                    # 关键词列表（Top10 行才拼，避免爆内存）
-                    kw_map = (
-                        tmp[tmp["product_handle"].isin(hero["product_handle"])][["product_handle", "keyword"]]
-                        .dropna()
-                        .groupby("product_handle")["keyword"]
-                        .apply(lambda s: ", ".join(sorted(set([str(v).strip() for v in s if str(v).strip()]))[:50]))
-                        .to_dict()
-                    )
-                    hero["keywords"] = hero["product_handle"].map(kw_map).fillna("")
+                        kw_map = (
+                            tmp[tmp["product_handle"].isin(hero["product_handle"])][["product_handle", "keyword"]]
+                            .dropna()
+                            .groupby("product_handle")["keyword"]
+                            .apply(lambda s: ", ".join(sorted(set([str(v).strip() for v in s if str(v).strip()]))[:50]))
+                            .to_dict()
+                        )
+                        hero["keywords"] = hero["product_handle"].map(kw_map).fillna("")
 
-                    # 可读展示：隐藏 sku_id，仅展示 title/handle，并把 handle 做成可点击链接
-                    hero_show = hero.copy()
-                    hero_show["handle_link"] = hero_show["sample_url"]
-                    cols = [
-                        c
-                        for c in [
-                            "image_url",
-                            "title",
-                            "handle_link",
-                            "ad_frequency",
-                            "keyword_count",
-                            "campaign_count",
-                            "keywords",
+                        hero_show = hero.copy()
+                        hero_show["handle"] = hero_show["product_handle"]
+                        hero_show["handle_link"] = hero_show["sample_url"]
+                        hero_show["last_seen"] = pd.to_datetime(hero_show["last_seen"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M")
+
+                        total_rows = int(len(hero_show))
+                        if not show_all and total_rows > 0:
+                            total_pages = max(1, (total_rows + page_size - 1) // page_size)
+                            page_no = int(st.number_input("页码", min_value=1, max_value=total_pages, value=1, step=1, key="hero_page_no"))
+                            start_idx = (page_no - 1) * page_size
+                            hero_page = hero_show.iloc[start_idx : start_idx + page_size]
+                            st.caption(f"共 {total_rows} 条，当前第 {page_no}/{total_pages} 页")
+                        else:
+                            hero_page = hero_show
+                            st.caption(f"共 {total_rows} 条（Show All）")
+
+                        cols = [
+                            c
+                            for c in [
+                                "image_url",
+                                "title",
+                                "handle",
+                                "handle_link",
+                                "ad_frequency",
+                                "keyword_count",
+                                "campaign_count",
+                                "last_seen",
+                                "keywords",
+                            ]
+                            if c in hero_page.columns
                         ]
-                        if c in hero_show.columns
-                    ]
-                    hero_show = hero_show[cols]
-                    col_cfg = {
-                        "image_url": st.column_config.ImageColumn("Img", width="small"),
-                        "handle_link": st.column_config.LinkColumn("Handle", display_text="打开"),
-                    }
-                    st.dataframe(hero_show, width="stretch", column_config=col_cfg)
+                        hero_page = hero_page[cols]
+                        col_cfg = {
+                            "image_url": st.column_config.ImageColumn("Img", width="small"),
+                            "handle_link": st.column_config.LinkColumn("Handle", display_text="打开"),
+                        }
+                        st.dataframe(hero_page, width="stretch", column_config=col_cfg)
+                        st.download_button(
+                            "📥 导出 Hero Matrix CSV",
+                            hero_show.to_csv(index=False).encode("utf-8"),
+                            "hero_product_matrix.csv",
+                            "text/csv",
+                            key="dl_hero_matrix",
+                        )
 
                 with t4:
                     st.caption("判断关键词是否出现在标题中，用于识别‘乱投词’机会点。")
