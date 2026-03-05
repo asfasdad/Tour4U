@@ -65,3 +65,23 @@ def test_rename_session_file_key_returns_false_for_missing_source(monkeypatch, t
     _configure_temp_store(monkeypatch, tmp_path)
     ok = session_store.rename_session_file_key("none.csv", "new.csv")
     assert ok is False
+
+
+def test_delete_session_file_key_removes_file_mapping_and_by_id(monkeypatch, tmp_path):
+    _configure_temp_store(monkeypatch, tmp_path)
+
+    session = session_store.get_session_for_file("to_delete.csv")
+    session_store.save_session_for_file("to_delete.csv", session)
+
+    ok = session_store.delete_session_file_key("to_delete.csv")
+    assert ok is True
+
+    data = session_store._load_sessions_raw()
+    assert "to_delete.csv" not in data["by_file"]
+    assert session["id"] not in data["by_id"]
+
+
+def test_delete_session_file_key_returns_false_for_missing_key(monkeypatch, tmp_path):
+    _configure_temp_store(monkeypatch, tmp_path)
+    ok = session_store.delete_session_file_key("missing.csv")
+    assert ok is False

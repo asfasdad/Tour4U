@@ -155,6 +155,7 @@ def test_adparser_enrich_and_dedup_computes_occurrence_count():
     enriched, dedup = adparser_enrich_and_dedup(df)
     assert int(enriched["出现次数"].max()) == 2
     assert len(dedup) == 1
+    assert int(dedup.iloc[0]["出现次数"]) == 2
 
 
 def test_ensure_domain_and_product_id_fills_missing_fields():
@@ -325,3 +326,130 @@ def test_minimal_e2e_flow_with_mocked_url_resolution():
     assert len(dedup) == 1
     assert stage2.loc[0, "Campaign ID"] == "run123"
     assert stage2.loc[0, "Campaign"] == "campaign"
+
+
+def test_append_dedup_helpers_generate_stable_keys(tmp_path):
+    funcs = _load_main_functions(
+        [
+            "_normalize_url_for_dedup",
+            "_ad_row_unique_key",
+            "_collect_existing_row_keys",
+        ]
+    )
+
+    csv_path = tmp_path / "append_case.csv"
+    pd.DataFrame(
+        [
+            {
+                "Final URL": "https://A.com/p/1?b=2&a=1#frag",
+                "Campaign ID": "C1",
+            },
+            {
+                "Final URL": "https://a.com/p/1?a=1&b=2",
+                "Campaign ID": "c1",
+            },
+            {
+                "Final URL": "",
+                "Campaign ID": "C2",
+            },
+        ]
+    ).to_csv(csv_path, index=False, encoding="utf-8-sig")
+
+    keys = funcs["_collect_existing_row_keys"](str(csv_path))
+
+    url_key = funcs["_ad_row_unique_key"]("https://a.com/p/1?a=1&b=2", "c1")
+    cid_key = funcs["_ad_row_unique_key"]("", "C2")
+
+    assert url_key in keys
+    assert cid_key in keys
+    assert len(keys) == 2
+
+
+def test_delete_history_file_removes_csv_and_calls_session_cleanup(tmp_path):
+    called = {"name": None}
+
+    def _fake_delete_session_file_key(name):
+        called["name"] = name
+        return True
+
+    funcs = _load_main_functions(
+        ["delete_history_file"],
+        extra_globals={
+            "HISTORY_DIR": str(tmp_path),
+            "delete_session_file_key": _fake_delete_session_file_key,
+        },
+    )
+
+    file_name = "to_delete.csv"
+    p = tmp_path / file_name
+    p.write_text("a,b\n1,2\n", encoding="utf-8")
+
+    ok = funcs["delete_history_file"](file_name)
+    assert ok is True
+    assert not p.exists()
+    assert called["name"] == file_name
+
+    ok_missing = funcs["delete_history_file"]("missing.csv")
+    assert ok_missing is False
+
+
+def test_build_adgroup_change_rebuild_data_returns_drilldown_details():
+    funcs = _load_main_functions(["build_adgroup_change_rebuild_data"])
+    build_data = funcs["build_adgroup_change_rebuild_data"]
+
+    df = pd.DataFrame(
+        [
+            {
+                "Timestamp": "2026-03-01 10:00",
+                "Domain": "a.com",
+                "product_name": "P1",
+                "广告组ID": "G1",
+                "Final URL": "https://a.com/p1",
+            },
+            {
+                "Timestamp": "2026-03-02 10:00",
+                "Domain": "a.com",
+                "product_name": "P1",
+                "广告组ID": "G2",
+                "Final URL": "https://a.com/p2",
+            },
+        ]
+    )
+
+    out = build_data(df, mode="产品")
+    assert not out["summary"].empty
+    assert not out["details"].empty
+    assert set(out["details"]["change_type"].unique().tolist()) >= {"新增"}
+
+
+def test_build_keyword_insight_data_dedups_rows_and_counts_occurrence():
+    funcs = _load_main_functions(["_normalize_url_for_dedup", "build_keyword_insight_data"])
+    build_data = funcs["build_keyword_insight_data"]
+
+    df = pd.DataFrame(
+        [
+            {
+                "Timestamp": "2026-03-01 10:00",
+                "Domain": "a.com",
+                "Keyword": "chair",
+                "Product": "P1",
+                "Final URL": "https://a.com/p1?b=2&a=1",
+                "Price": "10",
+                "Review Count": "1",
+            },
+            {
+                "Timestamp": "2026-03-01 11:00",
+                "Domain": "a.com",
+                "Keyword": "chair",
+                "Product": "P1",
+                "Final URL": "https://a.com/p1?a=1&b=2",
+                "Price": "11",
+                "Review Count": "2",
+            },
+        ]
+    )
+
+    out = build_data(df, keyword="chair", granularity="小时")
+    assert int(out["summary"]["records"]) == 2
+    assert int(out["summary"]["unique_rows"]) == 1
+    assert int(out["details"].iloc[0]["出现次数"]) == 2
