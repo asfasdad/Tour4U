@@ -1548,10 +1548,203 @@ def build_keyword_insight_data(
     }
 
 
+def inject_modern_ui_theme() -> None:
+    st.markdown(
+        """
+<style>
+:root {
+  --brand: #1f4bff;
+  --bg-soft: #f6f8fc;
+  --line: #e7ebf3;
+  --text-strong: #0f172a;
+  --text-muted: #64748b;
+}
+
+[data-testid="stAppViewContainer"] {
+  background: radial-gradient(circle at 0% 0%, #f3f7ff 0%, #ffffff 45%);
+}
+
+[data-testid="stSidebar"] .block-container {
+  padding-top: 1rem;
+}
+
+[data-testid="stSidebar"] [data-testid="stExpander"] details {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.05);
+}
+
+[data-testid="stSidebar"] [data-testid="stExpander"] summary {
+  font-weight: 600;
+}
+
+[data-testid="stSidebar"] .stButton > button,
+[data-testid="stSidebar"] .stDownloadButton > button {
+  border-radius: 10px;
+}
+
+[data-testid="stSidebar"] .st-emotion-cache-16idsys p,
+[data-testid="stSidebar"] label {
+  color: var(--text-muted);
+}
+
+.app-hero {
+  background: linear-gradient(120deg, #0f172a 0%, #1f4bff 100%);
+  border-radius: 14px;
+  padding: 14px 18px;
+  margin-bottom: 14px;
+  color: #ffffff;
+}
+
+.app-hero h1 {
+  margin: 0;
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+
+.app-hero p {
+  margin: 6px 0 0 0;
+  font-size: 0.9rem;
+  color: #dbeafe;
+}
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 6px 0 10px 0;
+}
+
+.kpi-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 10px 12px;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+}
+
+.kpi-label {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  margin-bottom: 3px;
+}
+
+.kpi-value {
+  color: var(--text-strong);
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+
+[data-testid="stDataFrame"] {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.04);
+}
+
+[data-testid="stExpander"] details {
+  border: none;
+  background: var(--bg-soft);
+  border-radius: 12px;
+  box-shadow: 0 3px 12px rgba(15, 23, 42, 0.05);
+}
+
+[data-testid="stExpander"] [data-testid="stExpander"] details {
+  margin-left: 10px;
+  background: #ffffff;
+  border: 1px solid var(--line);
+}
+
+@media (max-width: 980px) {
+  .kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_modern_top_header() -> None:
+    st.markdown(
+        """
+<div class="app-hero">
+  <h1>竞品分析数据工作台 · V15</h1>
+  <p>多轮会话 · 数据对比 · 多模型切换 · 可折叠分析视图</p>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_overview_kpi_cards(df: pd.DataFrame) -> None:
+    campaign_col = "Campaign ID" if "Campaign ID" in df.columns else ("gad_campaignid" if "gad_campaignid" in df.columns else None)
+    keyword_col = "Keyword" if "Keyword" in df.columns else ("keyword" if "keyword" in df.columns else None)
+    domain_col = "Domain" if "Domain" in df.columns else ("domain" if "domain" in df.columns else None)
+    parse_col = "parse_strategy" if "parse_strategy" in df.columns else None
+
+    total_rows = int(len(df))
+    campaign_count = int(df[campaign_col].astype(str).nunique()) if campaign_col else 0
+    keyword_count = int(df[keyword_col].astype(str).nunique()) if keyword_col else 0
+    domain_count = int(df[domain_col].astype(str).nunique()) if domain_col else 0
+    pending_count = int((df[parse_col].astype(str) == "B_PENDING").sum()) if parse_col else 0
+
+    st.markdown(
+        f"""
+<div class="kpi-grid">
+  <div class="kpi-card"><div class="kpi-label">抓取记录总数</div><div class="kpi-value">{total_rows}</div></div>
+  <div class="kpi-card"><div class="kpi-label">Campaign 覆盖</div><div class="kpi-value">{campaign_count}</div></div>
+  <div class="kpi-card"><div class="kpi-label">关键词覆盖</div><div class="kpi-value">{keyword_count}</div></div>
+  <div class="kpi-card"><div class="kpi-label">域名覆盖 / 待解析</div><div class="kpi-value">{domain_count} / {pending_count}</div></div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_styled_raw_dataframe(raw_df_show: pd.DataFrame) -> None:
+    col_cfg = {}
+    if "Final URL" in raw_df_show.columns:
+        col_cfg["Final URL"] = st.column_config.LinkColumn("URL", display_text="↗")
+
+    numeric_cols = [c for c in ["Price", "Review Count", "出现次数", "http_status"] if c in raw_df_show.columns]
+    if numeric_cols:
+        raw_df_show = raw_df_show.copy()
+        for c in numeric_cols:
+            raw_df_show[c] = pd.to_numeric(raw_df_show[c], errors="coerce")
+
+    styler = raw_df_show.style
+    if "http_status" in raw_df_show.columns:
+        styler = styler.map(
+            lambda v: "background-color: #dcfce7; color: #166534; font-weight: 700; border-radius: 8px;"
+            if str(v).strip() == "200"
+            else "",
+            subset=["http_status"],
+        )
+    if "parse_strategy" in raw_df_show.columns:
+        styler = styler.map(
+            lambda v: "background-color: #ffedd5; color: #9a3412; font-weight: 700; border-radius: 8px;"
+            if str(v).strip() == "B_PENDING"
+            else "",
+            subset=["parse_strategy"],
+        )
+    if numeric_cols:
+        styler = styler.set_properties(subset=numeric_cols, **{"text-align": "right"})
+
+    styler = styler.set_table_styles(
+        [
+            {"selector": "th", "props": "background-color: #f8fafc; color: #334155; border-bottom: 1px solid #e2e8f0;"},
+            {"selector": "td", "props": "border-bottom: 1px solid #f1f5f9;"},
+        ]
+    )
+    st.dataframe(styler, width="stretch", hide_index=True, column_config=col_cfg)
+
+
 # --- 页面配置 ---
 st.set_page_config(page_title="竞品分析 v15 重构版", layout="wide", page_icon="🧠")
-st.title("🚀 竞品分析 (v15 架构重构版)")
-st.markdown("多轮会话 · 数据对比 · 多模型切换 · 可折叠工作台")
+inject_modern_ui_theme()
+render_modern_top_header()
 
 # --- Session State 核心数据结构 ---
 if "current_df" not in st.session_state:
@@ -1658,7 +1851,7 @@ def append_row_to_csv(path: str, row_dict: dict, write_header: bool = False) -> 
 
 # --- 侧边栏（全部可折叠）---
 with st.sidebar:
-    st.header("🎛️ 全局控制台")
+    st.header("全局控制台")
 
     # --- 全局域名过滤（置顶，强制影响全页面）---
     try:
@@ -1832,7 +2025,7 @@ with st.sidebar:
         if st.button("🧾 刷新列表", key="refresh_history_list_btn"):
             st.rerun()
 
-    with st.expander("📡 新建抓取任务", expanded=True):
+    with st.expander("新建抓取任务", expanded=True):
         blocked_domains_input = st.text_input(
             "🚫 屏蔽域名 (逗号分隔，留空不屏蔽)",
             value="",
@@ -1905,7 +2098,7 @@ with st.sidebar:
 
         st.divider()
 
-    with st.expander("🤖 AI 指挥中心 (点击展开/收起)", expanded=True):
+    with st.expander("AI 指挥中心 (点击展开/收起)", expanded=True):
         platform_options = list(PLATFORM_MODELS.keys())
         if st.session_state.get("sb_platform") not in platform_options:
             st.session_state.sb_platform = "OpenAI"
@@ -1927,7 +2120,7 @@ with st.sidebar:
         st.session_state.llm_model = model_name
         st.session_state.llm_api_key = api_key
 
-    with st.expander("🛠️ 引擎状态调试 (点击展开)", expanded=False):
+    with st.expander("引擎状态调试 (点击展开)", expanded=False):
         with ENGINE_LOCK:
             dbg = {
                 k: ENGINE_STATE.get(k)
@@ -2546,7 +2739,8 @@ if page == "📊 总览" and st.session_state.current_df is not None:
     export_df = adgroup_df_dedup if isinstance(adgroup_df_dedup, pd.DataFrame) and not adgroup_df_dedup.empty else df
 
     st.divider()
-    st.header(f"📈 数据分析工作台 (共 {len(df)} 条)")
+    st.markdown("### 数据分析工作台")
+    render_overview_kpi_cards(df)
     csv_bytes = export_df.to_csv(index=False).encode("utf-8")
     st.download_button("📥 下载当前数据 CSV", csv_bytes, "analysis_data.csv", "text/csv", key="dl_csv_main")
 
@@ -2655,13 +2849,10 @@ if page == "📊 总览" and st.session_state.current_df is not None:
                 if c in raw_source.columns
             ]
             raw_df_show = raw_source[show_cols].copy() if show_cols else raw_source
-            col_cfg = {}
-            if "Final URL" in raw_df_show.columns:
-                col_cfg["Final URL"] = st.column_config.LinkColumn("URL", display_text="打开")
-            st.dataframe(raw_df_show, width="stretch", column_config=col_cfg)
+            render_styled_raw_dataframe(raw_df_show)
 
         with t_tree:
-            with st.expander("📁 Brand → Campaign ID(gad_campaignid) → Products（去重后）", expanded=True):
+            with st.expander("Brand → Campaign ID(gad_campaignid) → Products（去重后）", expanded=True):
                 if df_dedup is None or df_dedup.empty:
                     st.info("暂无数据")
                 else:
@@ -2678,10 +2869,10 @@ if page == "📊 总览" and st.session_state.current_df is not None:
                             tree_df["Brand"] = ""
                         for brand, brand_df in tree_df.groupby("Brand", sort=False):
                             brand_name = brand if str(brand).strip() else "(Unknown Brand)"
-                            with st.expander(f"🏷️ 品牌: {brand_name}（{len(brand_df)} 条广告）", expanded=False):
+                            with st.expander(f"品牌: {brand_name}（{len(brand_df)} 条广告）", expanded=False):
                                 for cid, cid_df in brand_df.groupby("gad_campaignid", sort=False):
                                     cid_name = cid if str(cid).strip() else "(No gad_campaignid)"
-                                    with st.expander(f"📌 Campaign ID: {cid_name}（{len(cid_df)} 个产品）", expanded=False):
+                                    with st.expander(f"Campaign ID: {cid_name}（{len(cid_df)} 个产品）", expanded=False):
                                         show_cols2 = [
                                             c
                                             for c in [
@@ -2698,8 +2889,8 @@ if page == "📊 总览" and st.session_state.current_df is not None:
                                         view_df = cid_df[show_cols2].copy() if show_cols2 else cid_df
                                         col_cfg2 = {}
                                         if "Final URL" in view_df.columns:
-                                            col_cfg2["Final URL"] = st.column_config.LinkColumn("URL", display_text="打开")
-                                        st.dataframe(view_df, width="stretch", column_config=col_cfg2)
+                                            col_cfg2["Final URL"] = st.column_config.LinkColumn("URL", display_text="↗")
+                                        st.dataframe(view_df, width="stretch", column_config=col_cfg2, hide_index=True)
 
         with t_change:
             st.markdown("**广告组变化（可下钻）**")
@@ -2763,7 +2954,7 @@ if page == "📊 总览" and st.session_state.current_df is not None:
                     dshow = details_df.sort_values(["date", "change_type"], ascending=[False, True]) if not details_df.empty else details_df
                     dcfg = {}
                     if "Final URL" in dshow.columns:
-                        dcfg["Final URL"] = st.column_config.LinkColumn("URL", display_text="打开")
+                        dcfg["Final URL"] = st.column_config.LinkColumn("URL", display_text="↗")
                     st.dataframe(dshow, width="stretch", column_config=dcfg)
                     csv_bytes = dshow.to_csv(index=False).encode("utf-8") if dshow is not None else b""
                     st.download_button("📥 导出变化明细 CSV", csv_bytes, "adgroup_change_details.csv", "text/csv", key="dl_adgroup_change")
@@ -2808,7 +2999,7 @@ if page == "📊 总览" and st.session_state.current_df is not None:
         st.markdown("**筛选结果明细（去重聚合）**")
         col_cfg_focus = {}
         if "Final URL" in detail_df.columns:
-            col_cfg_focus["Final URL"] = st.column_config.LinkColumn("URL", display_text="打开")
+            col_cfg_focus["Final URL"] = st.column_config.LinkColumn("URL", display_text="↗")
         st.dataframe(detail_df, width="stretch", column_config=col_cfg_focus)
         st.download_button(
             "📥 导出关键词洞察明细 CSV",
@@ -3019,7 +3210,7 @@ if page == "📊 总览" and st.session_state.current_df is not None:
                         hero_page = hero_page[cols]
                         col_cfg = {
                             "image_url": st.column_config.ImageColumn("Img", width="small"),
-                            "handle_link": st.column_config.LinkColumn("Handle", display_text="打开"),
+                            "handle_link": st.column_config.LinkColumn("Handle", display_text="↗"),
                         }
                         st.dataframe(hero_page, width="stretch", column_config=col_cfg)
                         st.download_button(
